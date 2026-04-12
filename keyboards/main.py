@@ -17,6 +17,13 @@ def main_menu(role: str) -> ReplyKeyboardMarkup:
             is_persistent=True,
         )
 
+    if role == "operator":
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BTN_CONTAINERS)]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_CONTAINERS), KeyboardButton(text=BTN_COMPANIES)],

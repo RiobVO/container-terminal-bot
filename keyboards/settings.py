@@ -9,6 +9,7 @@ BTN_SET_DEFAULTS = "💰 Стандартные тарифы"
 
 # Смена роли пользователя
 BTN_ROLE_FULL = "✅ Полный доступ"
+BTN_ROLE_OPERATOR = "📦 Оператор"
 BTN_ROLE_REPORTS = "📊 Только отчёты"
 BTN_ROLE_NONE = "⛔ Нет доступа"
 BTN_CANCEL_BACK = "◀ Отмена"
@@ -20,9 +21,10 @@ BTN_DEF_STORAGE_RATE = "💰 Ставка хранения"
 BTN_DEF_STORAGE_PERIOD = "📅 Период начисления"
 
 # Иконки ролей
-ROLE_ICONS = {"full": "✅", "reports_only": "📊", "none": "⛔"}
+ROLE_ICONS = {"full": "✅", "operator": "📦", "reports_only": "📊", "none": "⛔"}
 ROLE_NAMES = {
     "full": "Полный доступ",
+    "operator": "Оператор",
     "reports_only": "Только отчёты",
     "none": "Нет доступа",
 }
@@ -82,6 +84,7 @@ def user_role_reply_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_ROLE_FULL)],
+            [KeyboardButton(text=BTN_ROLE_OPERATOR)],
             [KeyboardButton(text=BTN_ROLE_REPORTS)],
             [KeyboardButton(text=BTN_ROLE_NONE)],
             [KeyboardButton(text=BTN_CANCEL_BACK)],
