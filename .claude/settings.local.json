@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(xargs wc:*)",
+      "Bash(ls -lh /c/Users/eleru/PycharmProjects/container/*.db)",
+      "Bash(wc -l /c/Users/eleru/PycharmProjects/container/handlers/*.py /c/Users/eleru/PycharmProjects/container/keyboards/*.py)"
+    ]
+  }
+}

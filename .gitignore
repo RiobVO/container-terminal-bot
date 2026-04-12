@@ -1,0 +1,11 @@
+.env
+*.db
+*.db.backup_*
+__pycache__/
+*.pyc
+.venv/
+*.xlsx
+.DS_Store
+.idea/
+test_reports/
+docs/superpowers/
