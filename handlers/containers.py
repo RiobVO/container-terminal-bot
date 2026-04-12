@@ -100,8 +100,11 @@ def _mark(is_custom: bool) -> str:
     return "индивидуальный" if is_custom else "стандартный"
 
 
-def _card_text(container, cost: dict) -> str:
-    """Формирует текст карточки контейнера."""
+def _card_text(container, cost: dict, show_tariff: bool = True) -> str:
+    """Формирует текст карточки контейнера.
+
+    show_tariff=False скрывает блок тарификации (для роли operator).
+    """
     status = container["status"]
     display = container["display_number"]
     company_name = container["company_name"] or "—"
@@ -112,32 +115,34 @@ def _card_text(container, cost: dict) -> str:
             f"🚚 <b>Контейнер {display}</b> (В пути)\n\n"
             f"🏢 Компания: {company_name}\n"
             f"📦 Тип: {ctype}\n"
-            f"⏳ Контейнер ещё не прибыл на терминал. "
-            f"Billing начнётся после прибытия."
+            f"⏳ Контейнер ещё не прибыл на терминал."
         )
 
-    entry_mark = _mark(cost["entry_is_custom"])
-    free_mark = _mark(cost["free_days_is_custom"])
-    rate_mark = _mark(cost["storage_rate_is_custom"])
-    period_mark = _mark(cost["storage_period_is_custom"])
-    period_label = _period_label(cost["period_days"])
+    tariff_section = ""
+    if show_tariff:
+        entry_mark = _mark(cost["entry_is_custom"])
+        free_mark = _mark(cost["free_days_is_custom"])
+        rate_mark = _mark(cost["storage_rate_is_custom"])
+        period_mark = _mark(cost["storage_period_is_custom"])
+        period_label = _period_label(cost["period_days"])
 
-    tariff_block = (
-        f"💰 Стоимость входа: {cost['entry_fee']} $ ({entry_mark})\n"
-        f"🆓 Бесплатных дней: {cost['free_days']} ({free_mark})\n"
-        f"💵 Ставка хранения: {cost['storage_rate']} $ "
-        f"за {cost['period_days']} дн. ({rate_mark}, {period_label}, {period_mark})"
-    )
+        tariff_block = (
+            f"💰 Стоимость входа: {cost['entry_fee']} $ ({entry_mark})\n"
+            f"🆓 Бесплатных дней: {cost['free_days']} ({free_mark})\n"
+            f"💵 Ставка хранения: {cost['storage_rate']} $ "
+            f"за {cost['period_days']} дн. ({rate_mark}, {period_label}, {period_mark})"
+        )
 
-    calc_block = (
-        f"📊 <b>Расчёт:</b>\n"
-        f"• Дней на терминале: {cost['days']}\n"
-        f"• Платных дней: {cost['billable_days']}\n"
-        f"• Периодов к оплате: {cost['periods']}\n"
-        f"• Вход: {cost['entry']} $\n"
-        f"• Хранение: {cost['storage']} $\n"
-        f"💰 К оплате: {cost['total']} $"
-    )
+        calc_block = (
+            f"📊 <b>Расчёт:</b>\n"
+            f"• Дней на терминале: {cost['days']}\n"
+            f"• Платных дней: {cost['billable_days']}\n"
+            f"• Периодов к оплате: {cost['periods']}\n"
+            f"• Вход: {cost['entry']} $\n"
+            f"• Хранение: {cost['storage']} $\n"
+            f"💰 К оплате: {cost['total']} $"
+        )
+        tariff_section = f"\n\n💳 <b>Тарификация</b>\n{tariff_block}\n\n{calc_block}"
 
     if status == "departed":
         dep_date = _fmt_dt(container["departure_date"])
@@ -147,9 +152,8 @@ def _card_text(container, cost: dict) -> str:
             f"🏢 Компания: {company_name}\n"
             f"📦 Тип: {ctype}\n"
             f"📅 Дата прибытия: {arr_date}\n"
-            f"📅 Дата вывоза: {dep_date}\n\n"
-            f"💳 <b>Тарификация</b>\n{tariff_block}\n\n"
-            f"{calc_block}"
+            f"📅 Дата вывоза: {dep_date}"
+            f"{tariff_section}"
         )
 
     arr_date = _fmt_dt(container["arrival_date"])
@@ -157,9 +161,8 @@ def _card_text(container, cost: dict) -> str:
         f"📦 <b>Контейнер {display}</b>\n\n"
         f"🏢 Компания: {company_name}\n"
         f"📦 Тип: {ctype}\n"
-        f"📅 Дата прибытия: {arr_date}\n\n"
-        f"💳 <b>Тарификация</b>\n{tariff_block}\n\n"
-        f"{calc_block}"
+        f"📅 Дата прибытия: {arr_date}"
+        f"{tariff_section}"
     )
 
 
@@ -168,6 +171,7 @@ async def _send_container_card(
     container,
     state: FSMContext | None = None,
     source: str | None = None,
+    role: str = "full",
 ) -> None:
     """Отправляет карточку контейнера.
 
@@ -179,6 +183,8 @@ async def _send_container_card(
     `source` — откуда открыта карточка: "active" или "departed". Если None
     и state задан, значение берётся из текущих данных FSM (по умолчанию
     "active").
+
+    `role` — роль пользователя. operator не видит блок тарификации.
     """
     settings = await get_all_settings()
     cost = calculate_container_cost(
@@ -199,8 +205,15 @@ async def _send_container_card(
             container_id=container["id"], card_source=source
         )
 
+    # Определяем роль из FSM data или параметра
+    actual_role = role
+    if actual_role == "full" and state is not None:
+        data = await state.get_data()
+        actual_role = data.get("user_role", "full")
+
+    show_tariff = actual_role != "operator"
     await message.answer(
-        _card_text(container, cost),
+        _card_text(container, cost, show_tariff=show_tariff),
         reply_markup=container_card_reply_kb(container["status"]),
     )
 
@@ -297,9 +310,10 @@ async def containers_section_enter(
     message: Message, state: FSMContext, role: str
 ) -> None:
     """Вход в раздел контейнеров."""
-    if role != "full":
+    if role not in ("full", "operator"):
         await message.answer("⛔ У вас нет доступа. Обратитесь к администратору.")
         return
+    await state.update_data(user_role=role)
     await _show_menu(message, state)
 
 
@@ -360,7 +374,7 @@ async def menu_text_input(
     message: Message, state: FSMContext, role: str
 ) -> None:
     """Текстовый ввод на главном экране → поиск/регистрация контейнера."""
-    if role != "full":
+    if role not in ("full", "operator"):
         return
     text = (message.text or "").strip()
     if not text or text in RESERVED_BUTTON_TEXTS:
@@ -395,7 +409,7 @@ async def search_text_input(
     message: Message, state: FSMContext, role: str
 ) -> None:
     """На экране выбора типа тоже разрешён ручной ввод номера."""
-    if role != "full":
+    if role not in ("full", "operator"):
         return
     text = (message.text or "").strip()
     if not text or text in RESERVED_BUTTON_TEXTS:

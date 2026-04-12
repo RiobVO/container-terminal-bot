@@ -310,6 +310,40 @@ async def _migrate_v1_to_v2(conn: aiosqlite.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _needs_operator_role(conn: aiosqlite.Connection) -> bool:
+    """Проверяет, нужна ли миграция для добавления роли operator."""
+    if not await _has_table(conn, "users"):
+        return False
+    # Проверяем CHECK constraint через sql схемы таблицы
+    row = await (
+        await conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        )
+    ).fetchone()
+    if row is None:
+        return False
+    return "operator" not in row[0]
+
+
+async def _add_operator_role(conn: aiosqlite.Connection) -> None:
+    """Пересоздаёт таблицу users с поддержкой роли operator."""
+    logger.info("Добавляю роль operator в таблицу users...")
+    await conn.executescript("""
+        CREATE TABLE users_new (
+            tg_id      INTEGER PRIMARY KEY,
+            username   TEXT,
+            full_name  TEXT,
+            role       TEXT NOT NULL DEFAULT 'none'
+                       CHECK (role IN ('full', 'operator', 'reports_only', 'none')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO users_new SELECT * FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+    """)
+    logger.info("Роль operator добавлена")
+
+
 async def run_migrations(db_path: str) -> None:
     """Выполняет все необходимые миграции последовательно."""
     if not Path(db_path).exists():
@@ -319,10 +353,9 @@ async def run_migrations(db_path: str) -> None:
     async with aiosqlite.connect(db_path) as conn:
         need_v0 = await _needs_v0_to_v1(conn)
         need_v1 = not need_v0 and await _needs_v1_to_v2(conn)
+        need_operator = await _needs_operator_role(conn)
 
-        if not need_v0 and not need_v1:
-            # Ещё может потребоваться миграция v1→v2 после v0→v1 —
-            # это решается во втором проходе ниже.
+        if not need_v0 and not need_v1 and not need_operator:
             logger.info("Миграция не требуется")
             return
 
@@ -335,6 +368,10 @@ async def run_migrations(db_path: str) -> None:
         # После v0→v1 схема может стать v1 — проверяем повторно.
         if await _needs_v1_to_v2(conn):
             await _migrate_v1_to_v2(conn)
+            await conn.commit()
+
+        if need_operator:
+            await _add_operator_role(conn)
             await conn.commit()
 
         logger.info("Миграция завершена успешно")

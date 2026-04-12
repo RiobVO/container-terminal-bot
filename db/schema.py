@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
     username   TEXT,
     full_name  TEXT,
     role       TEXT NOT NULL DEFAULT 'none'
-               CHECK (role IN ('full', 'reports_only', 'none')),
+               CHECK (role IN ('full', 'operator', 'reports_only', 'none')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
