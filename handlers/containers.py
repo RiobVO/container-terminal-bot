@@ -686,7 +686,7 @@ async def _finalize_departure(
                 comp_storage_rate=fresh_for_notify["comp_storage_rate"],
                 comp_storage_period_days=fresh_for_notify["comp_storage_period_days"],
             )
-            username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+            username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
             notify_text = (
                 f"🚛 <b>Вывоз</b>\n"
                 f"{fresh_for_notify['display_number']} ({fresh_for_notify['company_name'] or '—'})"
@@ -878,7 +878,7 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
     # Live-лента: уведомление в группы
     if hasattr(message.bot, "_group_ids") and message.bot._group_ids:
         from services.group_notify import notify_groups
-        username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
         notify_text = (
             f"🗑 <b>Удалён контейнер</b>\n"
             f"{display} ({company})\n"
