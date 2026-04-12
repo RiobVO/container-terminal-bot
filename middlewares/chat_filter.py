@@ -32,7 +32,7 @@ class ChatFilterMiddleware(BaseMiddleware):
         if chat.type == "private":
             return await handler(event, data)
 
-        if chat.type in ("group", "supergroup") and chat.id in self._group_ids:
+        if chat.type in ("group", "supergroup", "channel") and chat.id in self._group_ids:
             return await handler(event, data)
 
         logger.debug("Чат %s (%s) не в списке разрешённых", chat.id, chat.type)

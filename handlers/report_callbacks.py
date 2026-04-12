@@ -1,5 +1,6 @@
-"""Обработчики inline-кнопок под утренним отчётом."""
+"""Обработчики inline-кнопок: утренний отчёт в канале + команда /report."""
 import logging
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +10,10 @@ from aiogram.types import CallbackQuery, FSInputFile
 from db import containers as db_cont
 from db.settings import get_all_settings
 from services.calculator import calculate_container_cost
-from services.daily_report import _classify_warning, _format_money
+from services.daily_report import (
+    _classify_warning, _format_money, build_morning_report, build_evening_report,
+)
+from services.group_notify import notify_groups
 from services.report_generator import build_report
 
 logger = logging.getLogger(__name__)
@@ -103,7 +107,7 @@ async def morning_xlsx(callback: CallbackQuery) -> None:
         await callback.answer("Нет данных для отчёта", show_alert=True)
         return
 
-    out_dir = Path("/tmp/reports")
+    out_dir = Path(tempfile.gettempdir()) / "reports"
     filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
     path = build_report(
@@ -117,6 +121,78 @@ async def morning_xlsx(callback: CallbackQuery) -> None:
         caption="📊 Отчёт по всем контейнерам",
     )
     await callback.answer()
+
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Кнопки команды /report (из личного чата админа → в канал)
+# ---------------------------------------------------------------------------
+
+
+@router.callback_query(F.data == "cmd_report:morning")
+async def cmd_report_morning(callback: CallbackQuery) -> None:
+    """Отправляет утренний отчёт в канал."""
+    group_ids = getattr(callback.bot, "_group_ids", frozenset())
+    if not group_ids:
+        await callback.answer("GROUP_IDS не настроены", show_alert=True)
+        return
+
+    from services.scheduler import _morning_keyboard
+    text = await build_morning_report()
+    await notify_groups(callback.bot, group_ids, text, reply_markup=_morning_keyboard())
+    await callback.answer("✅ Утренний отчёт отправлен в канал", show_alert=True)
+
+
+@router.callback_query(F.data == "cmd_report:evening")
+async def cmd_report_evening(callback: CallbackQuery) -> None:
+    """Отправляет вечерний итог дня в канал."""
+    group_ids = getattr(callback.bot, "_group_ids", frozenset())
+    if not group_ids:
+        await callback.answer("GROUP_IDS не настроены", show_alert=True)
+        return
+
+    text = await build_evening_report()
+    await notify_groups(callback.bot, group_ids, text)
+    await callback.answer("✅ Итоги дня отправлены в канал", show_alert=True)
+
+
+@router.callback_query(F.data == "cmd_report:xlsx")
+async def cmd_report_xlsx(callback: CallbackQuery) -> None:
+    """Генерирует xlsx и отправляет в канал."""
+    group_ids = getattr(callback.bot, "_group_ids", frozenset())
+    if not group_ids:
+        await callback.answer("GROUP_IDS не настроены", show_alert=True)
+        return
+
+    settings = await get_all_settings()
+    containers = await db_cont.fetch_for_report(("on_terminal", "departed"))
+
+    if not containers:
+        await callback.answer("Нет данных для отчёта", show_alert=True)
+        return
+
+    out_dir = Path(tempfile.gettempdir()) / "reports"
+    filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    path = build_report(
+        containers, settings, out_dir, filename,
+        group_field="arrival_date", summary_sheet_name="Сводка",
+    )
+
+    for gid in group_ids:
+        try:
+            await callback.bot.send_document(
+                chat_id=gid,
+                document=FSInputFile(path, filename=filename),
+                caption="📊 Отчёт по всем контейнерам",
+            )
+        except Exception:
+            logger.warning("Не удалось отправить xlsx в %s", gid)
+
+    await callback.answer("✅ xlsx отправлен в канал", show_alert=True)
 
     try:
         path.unlink()
