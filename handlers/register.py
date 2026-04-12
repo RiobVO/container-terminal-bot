@@ -320,7 +320,7 @@ async def _finalize(
     # Live-лента: уведомление в группы
     if hasattr(message.bot, "_group_ids") and message.bot._group_ids:
         from services.group_notify import notify_groups
-        username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
         status_text = "На терминале" if status == "on_terminal" else "В пути"
         notify_text = (
             f"📥 <b>Новый контейнер</b>\n"
