@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand
 
 from config import load_config
@@ -38,7 +39,21 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     bot._group_ids = cfg.group_ids
-    dp = Dispatcher(storage=MemoryStorage())
+
+    # Redis для хранения FSM (состояние переживает перезапуск)
+    # Если Redis недоступен — фолбэк на MemoryStorage
+    if cfg.redis_url:
+        try:
+            storage = RedisStorage.from_url(cfg.redis_url)
+            logger.info("FSM storage: Redis (%s)", cfg.redis_url)
+        except Exception:
+            logger.warning("Redis недоступен, используем MemoryStorage")
+            storage = MemoryStorage()
+    else:
+        storage = MemoryStorage()
+        logger.info("FSM storage: MemoryStorage (REDIS_URL не задан)")
+
+    dp = Dispatcher(storage=storage)
 
     chat_filter = ChatFilterMiddleware(cfg.group_ids)
     dp.message.middleware(chat_filter)
