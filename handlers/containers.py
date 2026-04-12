@@ -205,11 +205,13 @@ async def _send_container_card(
             container_id=container["id"], card_source=source
         )
 
-    # Определяем роль из FSM data или параметра
+    # Определяем роль: если не передана явно — берём из БД
     actual_role = role
-    if actual_role == "full" and state is not None:
-        data = await state.get_data()
-        actual_role = data.get("user_role", "full")
+    if actual_role == "full" and message.from_user:
+        from db.users import get_role
+        db_role = await get_role(message.from_user.id)
+        if db_role:
+            actual_role = db_role
 
     show_tariff = actual_role != "operator"
     await message.answer(

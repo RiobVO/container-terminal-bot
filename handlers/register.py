@@ -314,7 +314,7 @@ async def _finalize(
     if container:
         from handlers.containers import _send_container_card
         await _send_container_card(
-            message, container, state, source="active"
+            message, container, state, source="active", role=role
         )
 
     # Live-лента: уведомление в группы
