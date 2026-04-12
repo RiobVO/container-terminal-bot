@@ -51,9 +51,17 @@ async def test_unknown_group_blocked(middleware):
     handler.assert_not_called()
 
 
-async def test_channel_blocked(middleware):
-    """Канал блокируется."""
+async def test_unauthorized_channel_blocked(middleware):
+    """Канал не в списке разрешённых — блокируется."""
     handler = AsyncMock()
     event = _make_message("channel", chat_id=-100555)
     await middleware(handler, event, {})
     handler.assert_not_called()
+
+
+async def test_authorized_channel_allowed(middleware):
+    """Канал в списке разрешённых — пропускается (для callback из канала)."""
+    handler = AsyncMock()
+    event = _make_message("channel", chat_id=-100123)
+    await middleware(handler, event, {})
+    handler.assert_called_once()
