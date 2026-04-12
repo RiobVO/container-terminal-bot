@@ -69,6 +69,7 @@ async def main() -> None:
         BotCommand(command="help", description="Как пользоваться ботом"),
         BotCommand(command="menu", description="Главное меню"),
         BotCommand(command="cancel", description="Отменить текущее действие"),
+        BotCommand(command="report", description="Отправить отчёт в канал"),
     ])
 
     logger.info("Бот запущен")
