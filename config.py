@@ -24,6 +24,8 @@ class Config:
     timezone: str
     # Redis URL для хранения FSM (пустая строка = MemoryStorage)
     redis_url: str
+    # ID канала для бэкапов БД (пустая строка = бэкапы не отправляются)
+    backup_chat_id: int | None
 
 
 def load_config() -> Config:
@@ -50,4 +52,5 @@ def load_config() -> Config:
         evening_report_hour=int(os.getenv("EVENING_REPORT_HOUR", "20")),
         timezone=os.getenv("TIMEZONE", "Asia/Tashkent"),
         redis_url=os.getenv("REDIS_URL", ""),
+        backup_chat_id=int(os.getenv("BACKUP_CHAT_ID")) if os.getenv("BACKUP_CHAT_ID") else None,
     )
