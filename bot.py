@@ -51,18 +51,24 @@ async def main() -> None:
 
     # Планировщик отчётов (только если есть группы)
     if cfg.group_ids:
-        scheduler = init_scheduler(
-            bot=bot,
-            group_ids=cfg.group_ids,
-            report_hour=cfg.report_hour,
-            evening_hour=cfg.evening_report_hour,
-            timezone=cfg.timezone,
-        )
-        scheduler.start()
-        logger.info(
-            "Планировщик запущен: утренний=%02d:00, вечерний=%02d:00, tz=%s",
-            cfg.report_hour, cfg.evening_report_hour, cfg.timezone,
-        )
+        try:
+            scheduler = init_scheduler(
+                bot=bot,
+                group_ids=cfg.group_ids,
+                report_hour=cfg.report_hour,
+                evening_hour=cfg.evening_report_hour,
+                timezone=cfg.timezone,
+            )
+            scheduler.start()
+            logger.info(
+                "Планировщик запущен: утренний=%02d:00, вечерний=%02d:00, tz=%s",
+                cfg.report_hour, cfg.evening_report_hour, cfg.timezone,
+            )
+        except Exception:
+            logger.exception(
+                "Не удалось запустить планировщик (проверь TIMEZONE=%s)",
+                cfg.timezone,
+            )
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Запуск бота"),
