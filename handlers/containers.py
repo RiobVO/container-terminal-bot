@@ -656,6 +656,30 @@ async def _finalize_departure(
 
     await message.answer(confirmation)
 
+    # Live-лента: уведомление в группы о вывозе
+    if mode != "edit" and hasattr(message.bot, "_group_ids") and message.bot._group_ids:
+        from services.group_notify import notify_groups
+        fresh_for_notify = await db_cont.get_container(container_id)
+        if fresh_for_notify:
+            from db.settings import get_all_settings as _get_settings
+            _settings = await _get_settings()
+            _cost = calculate_container_cost(
+                fresh_for_notify, _settings,
+                comp_entry_fee=fresh_for_notify["comp_entry_fee"],
+                comp_free_days=fresh_for_notify["comp_free_days"],
+                comp_storage_rate=fresh_for_notify["comp_storage_rate"],
+                comp_storage_period_days=fresh_for_notify["comp_storage_period_days"],
+            )
+            username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+            notify_text = (
+                f"🚛 <b>Вывоз</b>\n"
+                f"{fresh_for_notify['display_number']} ({fresh_for_notify['company_name'] or '—'})"
+                f" — {fresh_for_notify['type'] or 'тип не указан'}\n"
+                f"Дней на терминале: {_cost['days']} | К оплате: {_cost['total']} $\n"
+                f"Оператор: {username}"
+            )
+            await notify_groups(message.bot, message.bot._group_ids, notify_text)
+
     fresh = await db_cont.get_container(container_id)
     if fresh is not None:
         await _send_container_card(message, fresh, state)
@@ -826,8 +850,26 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
     container_id = data.get("container_id")
     if container_id is None:
         return
+
+    # Сохраняем данные для уведомления ДО удаления
+    container = await db_cont.get_container(container_id)
+    display = container["display_number"] if container else "?"
+    company = (container["company_name"] or "—") if container else "—"
+
     await db_cont.delete_container(container_id)
     await message.answer("✅ Удалено")
+
+    # Live-лента: уведомление в группы
+    if hasattr(message.bot, "_group_ids") and message.bot._group_ids:
+        from services.group_notify import notify_groups
+        username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        notify_text = (
+            f"🗑 <b>Удалён контейнер</b>\n"
+            f"{display} ({company})\n"
+            f"Оператор: {username}"
+        )
+        await notify_groups(message.bot, message.bot._group_ids, notify_text)
+
     await _show_menu(message, state)
 
 
