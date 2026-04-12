@@ -316,3 +316,16 @@ async def _finalize(
         await _send_container_card(
             message, container, state, source="active"
         )
+
+    # Live-лента: уведомление в группы
+    if hasattr(message.bot, "_group_ids") and message.bot._group_ids:
+        from services.group_notify import notify_groups
+        username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        status_text = "На терминале" if status == "on_terminal" else "В пути"
+        notify_text = (
+            f"📥 <b>Новый контейнер</b>\n"
+            f"{display} ({company_name}) — {container_type or 'тип не указан'}\n"
+            f"Статус: {status_text}\n"
+            f"Оператор: {username}"
+        )
+        await notify_groups(message.bot, message.bot._group_ids, notify_text)
