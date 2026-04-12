@@ -116,8 +116,6 @@ async def build_morning_report() -> str:
         f"На терминале: {counts.get('on_terminal', 0)} контейнеров",
         f"В пути: {counts.get('in_transit', 0)} контейнеров",
         f"Вывезено (вчера): {departed_yesterday}",
-        "",
-        f"💰 Общая сумма к оплате: {_format_money(total_debt)} $",
     ]
 
     if warnings["red"]:
@@ -203,31 +201,21 @@ async def build_evening_report() -> str:
         "",
         f"Прибыло: +{arrived_today} контейнеров",
         f"Вывезено: -{departed_today} контейнеров",
-        f"Выручка за вывоз: {_format_money(revenue_today)} $",
     ]
 
     global _morning_snapshot
     if _morning_snapshot and _morning_snapshot["timestamp"].date() == today:
         prev_count = _morning_snapshot["on_terminal"]
-        prev_debt = _morning_snapshot["total_debt"]
         count_diff = current_on_terminal - prev_count
-        debt_diff = round(current_debt - prev_debt, 2)
-
         count_sign = "+" if count_diff >= 0 else ""
-        debt_sign = "+" if debt_diff >= 0 else ""
 
         lines.append("")
         lines.append(
             f"📈 На терминале: {prev_count} → {current_on_terminal} "
             f"({count_sign}{count_diff})"
         )
-        lines.append(
-            f"💰 Общий долг: {_format_money(prev_debt)} → "
-            f"{_format_money(current_debt)} ({debt_sign}{_format_money(debt_diff)}) $"
-        )
     else:
         lines.append("")
         lines.append(f"📈 На терминале: {current_on_terminal}")
-        lines.append(f"💰 Общий долг: {_format_money(current_debt)} $")
 
     return "\n".join(lines)
