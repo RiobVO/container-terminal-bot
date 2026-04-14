@@ -12,12 +12,12 @@ from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import Message
 
 from db import companies as db_comp
 from db import containers as db_cont
 from keyboards.containers import CONTAINER_TYPES
-from keyboards.main import main_menu, remove_kb
+from keyboards.main import main_menu
 from keyboards.register import (
     BTN_ARRIVAL_MANUAL,
     BTN_ARRIVAL_TODAY,
@@ -25,6 +25,7 @@ from keyboards.register import (
     BTN_REG_CANCEL,
     BTN_REG_SKIP_TYPE,
     register_arrival_date_reply_kb,
+    register_company_reply_kb,
     register_manual_date_reply_kb,
     register_type_reply_kb,
 )
@@ -51,19 +52,7 @@ async def start_registration(
     await state.set_state(RegisterContainer.waiting_for_company)
     await state.update_data(number=normalized, display_number=display)
 
-    buttons = [[KeyboardButton(text=c["name"])] for c in companies]
-    rows: list[list[KeyboardButton]] = []
-    for i in range(0, len(buttons), 2):
-        row = [buttons[i][0]]
-        if i + 1 < len(buttons):
-            row.append(buttons[i + 1][0])
-        rows.append(row)
-
-    kb = (
-        ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
-        if rows
-        else remove_kb()
-    )
+    kb = register_company_reply_kb([c["name"] for c in companies])
 
     await message.answer(
         f"📦 <b>Оформление прибытия контейнера {display}</b>\n\n"
@@ -82,6 +71,21 @@ async def _cancel_and_go_home(
 # ---------------------------------------------------------------------------
 # Шаг 1: выбор / создание компании
 # ---------------------------------------------------------------------------
+
+
+@router.message(
+    RegisterContainer.waiting_for_company, F.text == BTN_REG_CANCEL
+)
+async def company_cancel(
+    message: Message, state: FSMContext, role: str
+) -> None:
+    """Выход из флоу регистрации на шаге выбора компании.
+
+    Без этого обработчика любой текст в этом состоянии трактовался бы
+    как название новой компании, и случайный ввод создавал бы пустую
+    компанию с мусорным именем.
+    """
+    await _cancel_and_go_home(message, state, role)
 
 
 @router.message(RegisterContainer.waiting_for_company)
@@ -283,6 +287,22 @@ async def _finalize(
         arrival_date=arrival_date,
         container_type=container_type,
     )
+
+    if container_id is None:
+        # Дубликат (race между pre-check и INSERT) — сообщаем юзеру и
+        # открываем карточку уже существующего контейнера.
+        await state.clear()
+        await message.answer(
+            f"⚠️ Контейнер <b>{display}</b> уже зарегистрирован.",
+            reply_markup=main_menu(role),
+        )
+        existing = await db_cont.find_by_number(number)
+        if existing:
+            from handlers.containers import _send_container_card
+            await _send_container_card(
+                message, existing, state, source="active", role=role
+            )
+        return
 
     await state.clear()
 
