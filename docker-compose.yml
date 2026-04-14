@@ -14,6 +14,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
+    command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis-data:/data
 
