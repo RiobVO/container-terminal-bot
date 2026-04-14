@@ -203,8 +203,10 @@ def _write_data_row(
     company_name = _get(c, "company_name") or "—"
     status_human = STATUS_MAP.get(c["status"], c["status"])
 
-    arrival_cell = _parse_date(_get(c, "arrival_date")) or ""
-    departure_cell = _parse_date(_get(c, "departure_date")) or ""
+    arrival_dt = _parse_date(_get(c, "arrival_date"))
+    departure_dt = _parse_date(_get(c, "departure_date"))
+    arrival_cell = arrival_dt.strftime("%d.%m.%Y") if arrival_dt else ""
+    departure_cell = departure_dt.strftime("%d.%m.%Y") if departure_dt else ""
 
     ws.append([
         idx,
@@ -228,8 +230,7 @@ def _write_data_row(
         cell.alignment = _CENTER
     for col in MONEY_COLS:
         row[col - 1].number_format = MONEY_FMT
-    for col in DATE_COLS:
-        row[col - 1].number_format = DATE_FMT
+    # Даты уже записаны как строки "дд.мм.гггг" — number_format не нужен
 
     return cost
 
