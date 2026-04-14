@@ -1,4 +1,5 @@
 """Обработчики inline-кнопок: утренний отчёт в канале + команда /report."""
+import asyncio
 import logging
 import tempfile
 from datetime import datetime
@@ -107,10 +108,16 @@ async def morning_xlsx(callback: CallbackQuery) -> None:
         await callback.answer("Нет данных для отчёта", show_alert=True)
         return
 
+    # Снимаем «часики» с кнопки сразу: openpyxl-генерация дальше — секунды.
+    # Иначе callback может протухнуть (>15 сек) и юзер видит вечное ожидание.
+    await callback.answer("⏳ Генерирую отчёт…")
+
     out_dir = Path(tempfile.gettempdir()) / "reports"
     filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
-    path = build_report(
+    # Синхронный openpyxl в отдельном потоке — не блокируем event loop.
+    path = await asyncio.to_thread(
+        build_report,
         containers, settings, out_dir, filename,
         group_field="arrival_date",
         summary_sheet_name="Сводка",
@@ -120,7 +127,6 @@ async def morning_xlsx(callback: CallbackQuery) -> None:
         FSInputFile(path, filename=filename),
         caption="📊 Отчёт по всем контейнерам",
     )
-    await callback.answer()
 
     try:
         path.unlink()
@@ -175,9 +181,14 @@ async def cmd_report_xlsx(callback: CallbackQuery) -> None:
         await callback.answer("Нет данных для отчёта", show_alert=True)
         return
 
+    # Снимаем «часики» сразу: дальше тяжёлая openpyxl-генерация и рассылка.
+    await callback.answer("⏳ Генерирую xlsx…")
+
     out_dir = Path(tempfile.gettempdir()) / "reports"
     filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    path = build_report(
+    # Синхронный openpyxl в отдельном потоке — не блокируем event loop.
+    path = await asyncio.to_thread(
+        build_report,
         containers, settings, out_dir, filename,
         group_field="arrival_date", summary_sheet_name="Сводка",
     )
@@ -191,8 +202,6 @@ async def cmd_report_xlsx(callback: CallbackQuery) -> None:
             )
         except Exception:
             logger.warning("Не удалось отправить xlsx в %s", gid)
-
-    await callback.answer("✅ xlsx отправлен в канал", show_alert=True)
 
     try:
         path.unlink()

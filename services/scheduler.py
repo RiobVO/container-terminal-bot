@@ -1,4 +1,5 @@
 """Планировщик автоматических отчётов и бэкапов."""
+import asyncio
 import logging
 import shutil
 from datetime import datetime
@@ -80,7 +81,9 @@ async def _backup_db(bot: Bot, backup_chat_id: int, db_path: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     backup_name = f"{src.stem}_{ts}{src.suffix}"
     backup_path = backup_dir / backup_name
-    shutil.copy2(src, backup_path)
+    # Копирование SQLite-файла — синхронный I/O. Без to_thread бэкап
+    # каждые 6 часов подвешивает event loop на время копирования.
+    await asyncio.to_thread(shutil.copy2, src, backup_path)
     logger.info("Локальный бэкап: %s", backup_path)
 
     # Ротация: удаляем локальные бэкапы старше 7 дней
