@@ -190,6 +190,10 @@ async def role_set(message: Message, state: FSMContext) -> None:
 
     new_role = _ROLE_BY_BTN[message.text]
     await db_users.set_role(tg_id, new_role)
+    # Роль кэшируется в RoleMiddleware на 60 сек — без сброса юзер
+    # будет видеть старую роль до минуты после изменения.
+    from middlewares.role import invalidate_role_cache
+    invalidate_role_cache(tg_id)
     logger.info(
         "Роль: tg_id=%s -> %s (by %s)",
         tg_id, new_role, message.from_user.id,

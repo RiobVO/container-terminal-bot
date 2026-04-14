@@ -112,13 +112,13 @@ async def process_company(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     display = data["display_number"]
 
+    # Раньше шли два отдельных message.answer подряд. Второй уезжал
+    # ~200 мс после первого и юзер видел «дёрганый» интерфейс. Сливаем
+    # текст и клавиатуру в одно сообщение.
     await message.answer(
         f"📦 Контейнер <b>{display}</b>\n"
         f"🏢 Компания: <b>{company_name}</b>\n\n"
-        "Когда контейнер прибыл на терминал?",
-    )
-    await message.answer(
-        "Выберите дату:",
+        "Когда контейнер прибыл на терминал? Выберите дату:",
         reply_markup=register_arrival_date_reply_kb(),
     )
 

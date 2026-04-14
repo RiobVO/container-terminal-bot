@@ -205,13 +205,12 @@ async def _send_container_card(
             container_id=container["id"], card_source=source
         )
 
-    # Определяем роль: если не передана явно — берём из БД
+    # Определяем роль: если не передана явно — берём из общего кэша
+    # с middleware (TTL 60 сек, без DB-запроса в горячем пути).
     actual_role = role
     if actual_role == "full" and message.from_user:
-        from db.users import get_role
-        db_role = await get_role(message.from_user.id)
-        if db_role:
-            actual_role = db_role
+        from middlewares.role import get_role_cached
+        actual_role = await get_role_cached(message.from_user.id)
 
     show_tariff = actual_role != "operator"
     await message.answer(
@@ -672,31 +671,36 @@ async def _finalize_departure(
 
     await message.answer(confirmation)
 
-    # Live-лента: уведомление в группы о вывозе
-    if mode != "edit" and hasattr(message.bot, "_group_ids") and message.bot._group_ids:
-        from services.group_notify import notify_groups
-        fresh_for_notify = await db_cont.get_container(container_id)
-        if fresh_for_notify:
-            from db.settings import get_all_settings as _get_settings
-            _settings = await _get_settings()
-            _cost = calculate_container_cost(
-                fresh_for_notify, _settings,
-                comp_entry_fee=fresh_for_notify["comp_entry_fee"],
-                comp_free_days=fresh_for_notify["comp_free_days"],
-                comp_storage_rate=fresh_for_notify["comp_storage_rate"],
-                comp_storage_period_days=fresh_for_notify["comp_storage_period_days"],
-            )
-            username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
-            notify_text = (
-                f"🚛 <b>Вывоз</b>\n"
-                f"{fresh_for_notify['display_number']} ({fresh_for_notify['company_name'] or '—'})"
-                f" — {fresh_for_notify['type'] or 'тип не указан'}\n"
-                f"Дней на терминале: {_cost['days']} | К оплате: {_cost['total']} $\n"
-                f"Оператор: {username}"
-            )
-            await notify_groups(message.bot, message.bot._group_ids, notify_text)
-
+    # Один get_container на оба пути (notify + карточка) вместо двух.
     fresh = await db_cont.get_container(container_id)
+
+    # Live-лента: уведомление в группы о вывозе
+    if (
+        mode != "edit"
+        and fresh is not None
+        and hasattr(message.bot, "_group_ids")
+        and message.bot._group_ids
+    ):
+        from services.group_notify import notify_groups
+        from db.settings import get_all_settings as _get_settings
+        _settings = await _get_settings()
+        _cost = calculate_container_cost(
+            fresh, _settings,
+            comp_entry_fee=fresh["comp_entry_fee"],
+            comp_free_days=fresh["comp_free_days"],
+            comp_storage_rate=fresh["comp_storage_rate"],
+            comp_storage_period_days=fresh["comp_storage_period_days"],
+        )
+        username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
+        notify_text = (
+            f"🚛 <b>Вывоз</b>\n"
+            f"{fresh['display_number']} ({fresh['company_name'] or '—'})"
+            f" — {fresh['type'] or 'тип не указан'}\n"
+            f"Дней на терминале: {_cost['days']} | К оплате: {_cost['total']} $\n"
+            f"Оператор: {username}"
+        )
+        await notify_groups(message.bot, message.bot._group_ids, notify_text)
+
     if fresh is not None:
         await _send_container_card(message, fresh, state)
 
