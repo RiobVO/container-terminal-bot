@@ -3,6 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
@@ -34,8 +35,15 @@ async def main() -> None:
         default_storage_period_days=cfg.default_storage_period_days,
     )
 
+    # Явный таймаут на HTTP-запросы к Telegram API. Без него aiohttp
+    # ждёт ответ бесконечно — если Telegram подвиснет (бывает редко,
+    # но бывает), бот залипнет на одном запросе и юзеры будут ждать.
+    # 30 сек — с запасом покрывают самые тяжёлые операции (отправка
+    # документа), но не дают зависнуть навсегда.
+    session = AiohttpSession(timeout=30)
     bot = Bot(
         token=cfg.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     bot._group_ids = cfg.group_ids
