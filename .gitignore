@@ -9,3 +9,5 @@ __pycache__/
 .idea/
 test_reports/
 docs/superpowers/
+
+.claude/
