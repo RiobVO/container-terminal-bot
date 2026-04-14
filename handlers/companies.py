@@ -174,19 +174,20 @@ async def _show_company_card(
     active_count = len(active_containers)
 
     total_debt = 0.0
+    # Калькулятору нужны status/arrival_date/departure_date — всё это уже
+    # есть в строках active_for_company, лишний get_container на каждый
+    # контейнер был N+1-запросом. Тариф берём из уже загруженной company.
     for c in active_containers:
         if c["status"] == "on_terminal":
-            full_c = await db_cont.get_container(c["id"])
-            if full_c:
-                cost = calculate_container_cost(
-                    full_c,
-                    settings,
-                    comp_entry_fee=company["entry_fee"],
-                    comp_free_days=company["free_days"],
-                    comp_storage_rate=company["storage_rate"],
-                    comp_storage_period_days=company["storage_period_days"],
-                )
-                total_debt += cost["total"]
+            cost = calculate_container_cost(
+                c,
+                settings,
+                comp_entry_fee=company["entry_fee"],
+                comp_free_days=company["free_days"],
+                comp_storage_rate=company["storage_rate"],
+                comp_storage_period_days=company["storage_period_days"],
+            )
+            total_debt += cost["total"]
 
     active_lines = [
         f"📦 {c['display_number']} (с {_fmt_short_date(c['arrival_date'])})"

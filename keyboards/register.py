@@ -15,6 +15,32 @@ BTN_REG_SKIP_TYPE = "⏭ Пропустить"
 BTN_REG_CANCEL = "◀ Отмена"
 
 
+def register_company_reply_kb(
+    company_names: list[str],
+) -> ReplyKeyboardMarkup:
+    """Список существующих компаний + кнопка отмены.
+
+    Отмена добавляется отдельной строкой внизу, чтобы юзер мог выйти из
+    флоу регистрации если ввёл номер контейнера по ошибке. Без этой
+    кнопки любой текст трактуется как название новой компании — юзер
+    может случайно создать пустую компанию с мусорным именем.
+    """
+    rows: list[list[KeyboardButton]] = []
+    buttons = [KeyboardButton(text=name) for name in company_names]
+    for i in range(0, len(buttons), 2):
+        row = [buttons[i]]
+        if i + 1 < len(buttons):
+            row.append(buttons[i + 1])
+        rows.append(row)
+    rows.append([KeyboardButton(text=BTN_REG_CANCEL)])
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        is_persistent=False,
+        one_time_keyboard=False,
+    )
+
+
 def register_arrival_date_reply_kb() -> ReplyKeyboardMarkup:
     """Выбор даты прибытия при регистрации контейнера."""
     return ReplyKeyboardMarkup(
