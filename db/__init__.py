@@ -32,6 +32,13 @@ async def init_db(
     await run_migrations(path)
 
     async with aiosqlite.connect(path) as conn:
+        # WAL: читатели не блокируют писателей и наоборот. Без этого при
+        # любой записи (регистрация контейнера, апдейт тарифа) все читатели
+        # ждут — отсюда «иногда подвисает» при параллельной работе двух
+        # юзеров. PRAGMA persistent — пишется в заголовок файла БД, для
+        # последующих соединений не нужна.
+        await conn.execute("PRAGMA journal_mode=WAL")
+
         await conn.executescript(DDL)
 
         # Глобальные настройки по умолчанию (не перезаписывают существующие)

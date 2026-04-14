@@ -5,6 +5,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import aiosqlite
 from aiogram import Bot
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -81,6 +82,17 @@ async def _backup_db(bot: Bot, backup_chat_id: int, db_path: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     backup_name = f"{src.stem}_{ts}{src.suffix}"
     backup_path = backup_dir / backup_name
+
+    # WAL: свежие записи лежат в .db-wal до чекпоинта. Если просто
+    # скопировать .db, в копии не будет последних транзакций. TRUNCATE
+    # сливает WAL в основной файл и обнуляет лог — после этого .db
+    # самодостаточен.
+    try:
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        logger.warning("WAL checkpoint перед бэкапом не удался", exc_info=True)
+
     # Копирование SQLite-файла — синхронный I/O. Без to_thread бэкап
     # каждые 6 часов подвешивает event loop на время копирования.
     await asyncio.to_thread(shutil.copy2, src, backup_path)
