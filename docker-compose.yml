@@ -1,6 +1,7 @@
 services:
   bot:
     build: .
+    container_name: container-bot
     restart: always
     env_file: .env
     depends_on:
@@ -9,15 +10,27 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_PATH=/app/data/container.db
     volumes:
-      - bot-data:/app/data
+      # Bind-mount: БД лежит в ./data на хосте — легко бэкапить и переносить.
+      # Владелец файлов должен быть UID 1000 (appuser из Dockerfile).
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
+    container_name: container-redis
     restart: always
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
-  bot-data:
   redis-data:

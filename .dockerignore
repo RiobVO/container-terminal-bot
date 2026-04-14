@@ -12,3 +12,5 @@ __pycache__/
 test_reports/
 tests/
 docs/
+data/
+.claude/
