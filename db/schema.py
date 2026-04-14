@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS containers (
 
 CREATE INDEX IF NOT EXISTS idx_containers_status ON containers(status);
 CREATE INDEX IF NOT EXISTS idx_containers_company ON containers(company_id);
+-- arrival_date / departure_date — ORDER BY в list_active, list_departed,
+-- active_for_company, all_for_company. Без индекса = full table scan.
+CREATE INDEX IF NOT EXISTS idx_containers_arrival_date ON containers(arrival_date);
+CREATE INDEX IF NOT EXISTS idx_containers_departure_date ON containers(departure_date);
+-- type — WHERE в active_by_type (поиск контейнеров по типу).
+CREATE INDEX IF NOT EXISTS idx_containers_type ON containers(type);
 
 CREATE TABLE IF NOT EXISTS users (
     tg_id      INTEGER PRIMARY KEY,
