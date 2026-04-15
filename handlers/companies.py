@@ -33,6 +33,7 @@ from keyboards.companies import (
 )
 from keyboards.main import BTN_BACK, BTN_COMPANIES, main_menu
 from services.calculator import calculate_container_cost
+from services.telegram_utils import send_long
 from states import (
     CompaniesSection,
     EditCompanyEntry,
@@ -212,7 +213,10 @@ async def _show_company_card(
     kb = company_card_reply_kb()
     await state.set_state(CompaniesSection.card)
     await state.update_data(company_id=company_id)
-    await message.answer(text, reply_markup=kb)
+    # Если у компании сотни активных контейнеров — текст вылезает за
+    # Telegram-лимит 4096 символов и прежний message.answer падал с
+    # TelegramBadRequest. send_long режет на чанки и шлёт по очереди.
+    await send_long(message, text, reply_markup=kb)
 
 
 # ---------------------------------------------------------------------------

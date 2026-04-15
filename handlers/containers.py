@@ -53,6 +53,7 @@ from keyboards.containers import (
 from keyboards.main import BTN_BACK, BTN_CONTAINERS, main_menu
 from services.calculator import calculate_container_cost
 from services.normalizer import normalize_container_number
+from services.telegram_utils import send_long
 from states import ContainerDepart, ContainerSection, EditContainerNumber
 
 logger = logging.getLogger(__name__)
@@ -295,7 +296,10 @@ async def _show_containers_by_type(
         f"📦 <b>Активные контейнеры типа {ctype}</b>\n\n"
         f"Всего: {len(rows)}\n\n"
     )
-    await message.answer(
+    # Список может вылезти за Telegram-лимит 4096 если у типа много
+    # активных контейнеров — режем на чанки.
+    await send_long(
+        message,
         header + "\n\n".join(blocks),
         reply_markup=containers_type_select_reply_kb(),
     )

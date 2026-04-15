@@ -16,6 +16,7 @@ from services.daily_report import (
 )
 from services.group_notify import notify_groups
 from services.report_generator import build_report
+from services.telegram_utils import send_long
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -53,7 +54,9 @@ async def morning_companies(callback: CallbackQuery) -> None:
         s = company_stats[name]
         lines.append(f"🏢 {name}: {s['count']} шт — {_format_money(s['total'])} $")
 
-    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    # Длинный список компаний может вылезти за Telegram-лимит 4096 —
+    # режем на чанки.
+    await send_long(callback.message, "\n".join(lines))
     await callback.answer()
 
 
@@ -94,7 +97,8 @@ async def morning_warnings(callback: CallbackQuery) -> None:
     lines = ["⚠️ <b>Все предупреждения</b>", ""]
     lines.extend(w[1] for w in warnings)
 
-    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    # При сотне предупреждений текст может вылезти за 4096 символов.
+    await send_long(callback.message, "\n".join(lines))
     await callback.answer()
 
 
