@@ -5,6 +5,7 @@ storage_rate, storage_period_days), каждое NULL означает «ста�
 global_settings».
 """
 import logging
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -197,7 +198,7 @@ async def _show_company_card(
     active_text = "\n".join(active_lines) if active_lines else "—"
 
     text = (
-        f"🏢 <b>{company['name']}</b>\n\n"
+        f"🏢 <b>{escape(company['name'])}</b>\n\n"
         f"💰 Стоимость входа: {entry_fee} $ ({entry_mark})\n"
         f"🆓 Бесплатных дней: {free_days} ({free_mark})\n"
         f"💵 Платное хранение: {storage_rate} $ за {storage_period} дн. "
@@ -290,12 +291,12 @@ async def companies_add_process(
         return
     existing = await db_comp.get_company_by_name_ci(name)
     if existing:
-        await message.answer(f"❌ Компания «{name}» уже существует.")
+        await message.answer(f"❌ Компания «{escape(name)}» уже существует.")
         return
 
     company_id = await db_comp.add_company(name=name)
     logger.info("Компания создана из списка: %s (id=%s)", name, company_id)
-    await message.answer(f"✅ Компания «{name}» создана")
+    await message.answer(f"✅ Компания «{escape(name)}» создана")
     await _show_company_card(message, state, company_id)
 
 
@@ -328,7 +329,7 @@ async def _begin_edit_field(
     await state.set_state(fsm_state)
     await state.update_data(company_id=company_id)
     await message.answer(
-        f'{title} компании "<b>{company["name"]}</b>"\n\n'
+        f'{title} компании "<b>{escape(company["name"])}</b>"\n\n'
         f"{current_text}\n\n"
         f"{prompt}",
         reply_markup=company_edit_field_reply_kb(),
@@ -457,7 +458,8 @@ async def card_rename(message: Message, state: FSMContext) -> None:
     await state.set_state(EditCompanyName.waiting_for_name)
     await state.update_data(company_id=company_id)
     await message.answer(
-        f'✏️ Введите новое название для компании "<b>{company["name"]}</b>":',
+        f'✏️ Введите новое название для компании '
+        f'"<b>{escape(company["name"])}</b>":',
         reply_markup=company_rename_reply_kb(),
     )
 
@@ -474,7 +476,7 @@ async def card_delete_ask(message: Message, state: FSMContext) -> None:
     await state.set_state(CompaniesSection.confirming_delete)
     await state.update_data(company_id=company_id)
     await message.answer(
-        f"⚠️ Удалить компанию «<b>{company['name']}</b>»?\n\n"
+        f"⚠️ Удалить компанию «<b>{escape(company['name'])}</b>»?\n\n"
         "Все контейнеры останутся в базе, но потеряют привязку.",
         reply_markup=company_delete_confirm_reply_kb(),
     )
@@ -508,7 +510,7 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
     name = company["name"]
     await db_comp.delete_company(company_id)
     logger.info("Компания удалена: id=%s name=%s", company_id, name)
-    await message.answer(f"✅ Компания «{name}» удалена")
+    await message.answer(f"✅ Компания «{escape(name)}» удалена")
     await _show_companies_list(message, state)
 
 
@@ -667,7 +669,7 @@ async def rename_process(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     company_id = data["company_id"]
     if existing and existing["id"] != company_id:
-        await message.answer(f"❌ Компания «{name}» уже существует.")
+        await message.answer(f"❌ Компания «{escape(name)}» уже существует.")
         return
     await db_comp.rename_company(company_id, name)
     await _return_to_card(message, state)

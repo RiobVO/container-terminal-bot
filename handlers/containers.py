@@ -14,6 +14,7 @@
 import logging
 from collections import defaultdict
 from datetime import datetime
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -108,8 +109,12 @@ def _card_text(container, cost: dict, show_tariff: bool = True) -> str:
     """
     status = container["status"]
     display = container["display_number"]
-    company_name = container["company_name"] or "—"
-    ctype = container["type"] or "не указан"
+    # company_name приходит из пользовательского ввода, может содержать
+    # <, &, > — без escape сломает HTML-парсер Telegram. ctype и display
+    # из фиксированных форматов (ISO 6346 / список типов), но на всякий
+    # случай чистим тоже — defense in depth.
+    company_name = escape(container["company_name"] or "—")
+    ctype = escape(container["type"] or "не указан")
 
     if status == "in_transit":
         return (
@@ -286,7 +291,7 @@ async def _show_containers_by_type(
     blocks: list[str] = []
     for cname in sorted(groups.keys(), key=str.lower):
         items = sorted(groups[cname], key=_row_key)
-        lines = [f"<b>{cname}:</b>"]
+        lines = [f"<b>{escape(cname)}:</b>"]
         for r in items:
             lines.append(r["display_number"])
         lines.append(f"<i>Общее: {len(items)} шт</i>")
@@ -698,10 +703,10 @@ async def _finalize_departure(
         username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
         notify_text = (
             f"🚛 <b>Вывоз</b>\n"
-            f"{fresh['display_number']} ({fresh['company_name'] or '—'})"
-            f" — {fresh['type'] or 'тип не указан'}\n"
+            f"{fresh['display_number']} ({escape(fresh['company_name'] or '—')})"
+            f" — {escape(fresh['type'] or 'тип не указан')}\n"
             f"Дней на терминале: {_cost['days']} | К оплате: {_cost['total']} $\n"
-            f"Оператор: {username}"
+            f"Оператор: {escape(username)}"
         )
         await notify_groups(message.bot, message.bot._group_ids, notify_text)
 
@@ -889,8 +894,8 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
         username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
         notify_text = (
             f"🗑 <b>Удалён контейнер</b>\n"
-            f"{display} ({company})\n"
-            f"Оператор: {username}"
+            f"{display} ({escape(company)})\n"
+            f"Оператор: {escape(username)}"
         )
         await notify_groups(message.bot, message.bot._group_ids, notify_text)
 

@@ -3,6 +3,7 @@ import asyncio
 import logging
 import tempfile
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from aiogram import F, Router
@@ -52,7 +53,9 @@ async def morning_companies(callback: CallbackQuery) -> None:
     lines = ["📦 <b>По компаниям (на терминале)</b>", ""]
     for name in sorted(company_stats.keys(), key=str.lower):
         s = company_stats[name]
-        lines.append(f"🏢 {name}: {s['count']} шт — {_format_money(s['total'])} $")
+        lines.append(
+            f"🏢 {escape(name)}: {s['count']} шт — {_format_money(s['total'])} $"
+        )
 
     # Длинный список компаний может вылезти за Telegram-лимит 4096 —
     # режем на чанки.
@@ -81,7 +84,8 @@ async def morning_warnings(callback: CallbackQuery) -> None:
         if level is None:
             continue
         display = c["display_number"]
-        company = c["company_name"] or "—"
+        # company_name из юзер-ввода — экранируем перед подстановкой в HTML.
+        company = escape(c["company_name"] or "—")
         icon = {"red": "🔴", "yellow": "🟡", "green": "💚"}[level]
         if level == "red":
             text = f"{icon} {display} ({company}) — {abs(days_left)} дн. на тарификации"

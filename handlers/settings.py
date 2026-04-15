@@ -5,6 +5,7 @@ default_entry_fee, default_free_days, default_storage_rate,
 default_storage_period_days.
 """
 import logging
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -103,8 +104,10 @@ async def _show_users(message: Message, state: FSMContext) -> None:
     lines: list[str] = []
     for u in users:
         icon = ROLE_ICONS.get(u["role"], "❓")
-        name = u["full_name"] or "—"
-        username = f"@{u['username']}" if u["username"] else "—"
+        # full_name и username приходят из Telegram, могут содержать
+        # спецсимволы HTML — без escape ломают парсер.
+        name = escape(u["full_name"] or "—")
+        username = f"@{escape(u['username'])}" if u["username"] else "—"
         protected = " 🔒" if u["tg_id"] in _cfg.admin_ids else ""
         lines.append(
             f"{icon} <b>{name}</b>{protected}\n"
@@ -151,7 +154,7 @@ async def users_pick(message: Message, state: FSMContext) -> None:
         await message.answer("🔒 Защищённый админ — роль изменить нельзя.")
         return
 
-    name = user["full_name"] or "—"
+    name = escape(user["full_name"] or "—")
     await state.set_state(UsersSection.role_edit)
     await state.update_data(target_tg_id=tg_id)
     await message.answer(

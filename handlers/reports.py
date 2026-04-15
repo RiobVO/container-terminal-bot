@@ -11,6 +11,7 @@ import asyncio
 import logging
 import tempfile
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from re import sub as re_sub
 
@@ -136,7 +137,9 @@ async def _generate_and_send(
     company_name = company["name"] if company is not None else None
 
     if company_name:
-        await message.answer(f"⏳ Генерирую отчёт по «{company_name}»…")
+        await message.answer(
+            f"⏳ Генерирую отчёт по «{escape(company_name)}»…"
+        )
     else:
         await message.answer("⏳ Генерирую отчёт…")
 
