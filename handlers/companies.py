@@ -34,7 +34,7 @@ from keyboards.companies import (
 )
 from keyboards.main import BTN_BACK, BTN_COMPANIES, main_menu
 from services.calculator import calculate_container_cost
-from services.telegram_utils import send_long
+from services.telegram_utils import split_text
 from states import (
     CompaniesSection,
     EditCompanyEntry,
@@ -195,10 +195,14 @@ async def _show_company_card(
         f"📦 {c['display_number']} (с {_fmt_short_date(c['arrival_date'])})"
         for c in active_containers
     ]
-    active_text = "\n".join(active_lines) if active_lines else "—"
 
-    text = (
-        f"🏢 <b>{escape(company['name'])}</b>\n\n"
+    # Карточка компании: шапка + тариф + статистика. Без списка
+    # активных — его шлём отдельным сообщением ниже, чтобы при большом
+    # списке каждый чанк имел свою шапку и юзер понимал контекст,
+    # а не видел голые номера без привязки к компании.
+    safe_name = escape(company['name'])
+    card_text = (
+        f"🏢 <b>{safe_name}</b>\n\n"
         f"💰 Стоимость входа: {entry_fee} $ ({entry_mark})\n"
         f"🆓 Бесплатных дней: {free_days} ({free_mark})\n"
         f"💵 Платное хранение: {storage_rate} $ за {storage_period} дн. "
@@ -207,17 +211,36 @@ async def _show_company_card(
         f"📊 <b>Статистика:</b>\n"
         f"• Занятых контейнеров: {active_count}\n"
         f"• Всего контейнеров за время: {total_ever}\n"
-        f"💰 К оплате: {total_debt:.2f} $\n\n"
-        f"<b>Активные контейнеры:</b>\n{active_text}"
+        f"💰 К оплате: {total_debt:.2f} $"
     )
 
     kb = company_card_reply_kb()
     await state.set_state(CompaniesSection.card)
     await state.update_data(company_id=company_id)
-    # Если у компании сотни активных контейнеров — текст вылезает за
-    # Telegram-лимит 4096 символов и прежний message.answer падал с
-    # TelegramBadRequest. send_long режет на чанки и шлёт по очереди.
-    await send_long(message, text, reply_markup=kb)
+
+    # Карточка без списка — всегда влезает в одно сообщение.
+    if not active_lines:
+        await message.answer(
+            card_text + f"\n\n<b>Активные контейнеры:</b>\n—",
+            reply_markup=kb,
+        )
+        return
+
+    await message.answer(card_text)
+
+    # Список активных. Режем на чанки по 3500 символов (запас 500 на
+    # шапку «ZIDONG — список (X/Y):» в каждом куске). Клавиатуру даём
+    # только последнему сообщению.
+    chunks = split_text("\n".join(active_lines), max_len=3500)
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, 1):
+        suffix = f" ({i}/{total})" if total > 1 else ""
+        header = f"📦 <b>Активные контейнеры {safe_name}{suffix}:</b>"
+        is_last = i == total
+        await message.answer(
+            f"{header}\n{chunk}",
+            reply_markup=kb if is_last else None,
+        )
 
 
 # ---------------------------------------------------------------------------
