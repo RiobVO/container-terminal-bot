@@ -32,33 +32,54 @@ so the dispatcher can see activity without opening the app.
 
 ## Architecture
 
+### Request flow
+
+```mermaid
+flowchart LR
+    User([Telegram user]) -->|update| Dispatcher
+    subgraph Process["Bot process (single container)"]
+        direction TB
+        Dispatcher[aiogram Dispatcher] --> ChatFilter
+        ChatFilter[ChatFilter<br/>DM + whitelisted groups] --> Role[RoleMiddleware<br/>resolves role from DB]
+        Role --> Routers[Routers<br/>containers · companies · reports<br/>users · tariffs · menu]
+        Routers --> Services[Services<br/>debt calc · xlsx · notifications]
+        Services --> DAL[aiosqlite DAL]
+    end
+    Services -.->|response| User
+    Services -.->|channel push| Channel([Ops channel])
+```
+
+Every update travels through the same two middlewares before it reaches a handler,
+so there is no way to call a service without a validated chat and a resolved role.
+Handlers are thin — all business logic lives in `services/`, which keeps them
+unit-testable with in-memory doubles.
+
+### Runtime topology
+
 ```mermaid
 flowchart TB
-    TG[Telegram API] -->|long polling| BOT[aiogram Dispatcher]
-    BOT --> FSM{FSM Storage}
-    FSM -->|prod| REDIS[(Redis 7<br/>AOF everysec)]
-    FSM -->|fallback| MEM[MemoryStorage]
+    subgraph Host["DigitalOcean droplet — Ubuntu 24.04"]
+        subgraph Bot["container-bot (non-root, UID 1000)"]
+            App[aiogram app]
+            Scheduler[APScheduler<br/>TZ Asia/Tashkent]
+        end
+        subgraph Redis["container-redis"]
+            R[(Redis 7<br/>AOF · everysec)]
+        end
+        Data[("./data<br/>bind-mounted<br/>SQLite + WAL")]
+    end
 
-    BOT --> MW[Middleware Stack]
-    MW --> CF[ChatFilter<br/>DM + whitelisted groups]
-    MW --> RL[RoleMiddleware<br/>4 access levels]
-
-    MW --> R[7 Routers]
-    R --> R1[containers]
-    R --> R2[companies]
-    R --> R3[reports]
-    R --> R4[users]
-    R --> R5[tariffs]
-    R --> R6[menu / common]
-
-    R --> S[Services]
-    S --> DB[(SQLite + aiosqlite<br/>WAL mode)]
-    S --> XLSX[openpyxl<br/>xlsx generation]
-
-    SCHED[APScheduler<br/>TZ Asia/Tashkent] --> |cron 06:00| DAILY[Daily report → channel]
-    SCHED --> |cron 20:00| EVE[Evening summary]
-    SCHED --> |cron 6h| BACKUP[SQLite snapshot → private channel]
+    App <-->|FSM state| R
+    App -->|read / write| Data
+    Scheduler -->|VACUUM INTO<br/>every 6h| Data
+    Scheduler -->|send_document| Backups([Private backup channel])
+    Scheduler -->|06:00 / 20:00| Ops([Ops channel])
+    App <-->|long polling| TG([Telegram API])
 ```
+
+Only two containers, one bind-mount, one outbound dependency. Redis is not
+exposed outside the compose network; the bot never opens a listening port —
+Telegram is the only ingress.
 
 ### Stack choices and trade-offs
 
