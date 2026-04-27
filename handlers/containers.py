@@ -14,6 +14,7 @@
 import logging
 from collections import defaultdict
 from datetime import datetime
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -53,6 +54,7 @@ from keyboards.containers import (
 from keyboards.main import BTN_BACK, BTN_CONTAINERS, main_menu
 from services.calculator import calculate_container_cost
 from services.normalizer import normalize_container_number
+from services.telegram_utils import send_long
 from states import ContainerDepart, ContainerSection, EditContainerNumber
 
 logger = logging.getLogger(__name__)
@@ -107,8 +109,12 @@ def _card_text(container, cost: dict, show_tariff: bool = True) -> str:
     """
     status = container["status"]
     display = container["display_number"]
-    company_name = container["company_name"] or "—"
-    ctype = container["type"] or "не указан"
+    # company_name приходит из пользовательского ввода, может содержать
+    # <, &, > — без escape сломает HTML-парсер Telegram. ctype и display
+    # из фиксированных форматов (ISO 6346 / список типов), но на всякий
+    # случай чистим тоже — defense in depth.
+    company_name = escape(container["company_name"] or "—")
+    ctype = escape(container["type"] or "не указан")
 
     if status == "in_transit":
         return (
@@ -205,13 +211,12 @@ async def _send_container_card(
             container_id=container["id"], card_source=source
         )
 
-    # Определяем роль: если не передана явно — берём из БД
+    # Определяем роль: если не передана явно — берём из общего кэша
+    # с middleware (TTL 60 сек, без DB-запроса в горячем пути).
     actual_role = role
     if actual_role == "full" and message.from_user:
-        from db.users import get_role
-        db_role = await get_role(message.from_user.id)
-        if db_role:
-            actual_role = db_role
+        from middlewares.role import get_role_cached
+        actual_role = await get_role_cached(message.from_user.id)
 
     show_tariff = actual_role != "operator"
     await message.answer(
@@ -286,7 +291,7 @@ async def _show_containers_by_type(
     blocks: list[str] = []
     for cname in sorted(groups.keys(), key=str.lower):
         items = sorted(groups[cname], key=_row_key)
-        lines = [f"<b>{cname}:</b>"]
+        lines = [f"<b>{escape(cname)}:</b>"]
         for r in items:
             lines.append(r["display_number"])
         lines.append(f"<i>Общее: {len(items)} шт</i>")
@@ -296,7 +301,10 @@ async def _show_containers_by_type(
         f"📦 <b>Активные контейнеры типа {ctype}</b>\n\n"
         f"Всего: {len(rows)}\n\n"
     )
-    await message.answer(
+    # Список может вылезти за Telegram-лимит 4096 если у типа много
+    # активных контейнеров — режем на чанки.
+    await send_long(
+        message,
         header + "\n\n".join(blocks),
         reply_markup=containers_type_select_reply_kb(),
     )
@@ -672,31 +680,36 @@ async def _finalize_departure(
 
     await message.answer(confirmation)
 
-    # Live-лента: уведомление в группы о вывозе
-    if mode != "edit" and hasattr(message.bot, "_group_ids") and message.bot._group_ids:
-        from services.group_notify import notify_groups
-        fresh_for_notify = await db_cont.get_container(container_id)
-        if fresh_for_notify:
-            from db.settings import get_all_settings as _get_settings
-            _settings = await _get_settings()
-            _cost = calculate_container_cost(
-                fresh_for_notify, _settings,
-                comp_entry_fee=fresh_for_notify["comp_entry_fee"],
-                comp_free_days=fresh_for_notify["comp_free_days"],
-                comp_storage_rate=fresh_for_notify["comp_storage_rate"],
-                comp_storage_period_days=fresh_for_notify["comp_storage_period_days"],
-            )
-            username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
-            notify_text = (
-                f"🚛 <b>Вывоз</b>\n"
-                f"{fresh_for_notify['display_number']} ({fresh_for_notify['company_name'] or '—'})"
-                f" — {fresh_for_notify['type'] or 'тип не указан'}\n"
-                f"Дней на терминале: {_cost['days']} | К оплате: {_cost['total']} $\n"
-                f"Оператор: {username}"
-            )
-            await notify_groups(message.bot, message.bot._group_ids, notify_text)
-
+    # Один get_container на оба пути (notify + карточка) вместо двух.
     fresh = await db_cont.get_container(container_id)
+
+    # Live-лента: уведомление в группы о вывозе
+    if (
+        mode != "edit"
+        and fresh is not None
+        and hasattr(message.bot, "_group_ids")
+        and message.bot._group_ids
+    ):
+        from services.group_notify import notify_groups
+        from db.settings import get_all_settings as _get_settings
+        _settings = await _get_settings()
+        _cost = calculate_container_cost(
+            fresh, _settings,
+            comp_entry_fee=fresh["comp_entry_fee"],
+            comp_free_days=fresh["comp_free_days"],
+            comp_storage_rate=fresh["comp_storage_rate"],
+            comp_storage_period_days=fresh["comp_storage_period_days"],
+        )
+        username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
+        notify_text = (
+            f"🚛 <b>Вывоз</b>\n"
+            f"{fresh['display_number']} ({escape(fresh['company_name'] or '—')})"
+            f" — {escape(fresh['type'] or 'тип не указан')}\n"
+            f"Дней на терминале: {_cost['days']} | К оплате: {_cost['total']} $\n"
+            f"Оператор: {escape(username)}"
+        )
+        await notify_groups(message.bot, message.bot._group_ids, notify_text)
+
     if fresh is not None:
         await _send_container_card(message, fresh, state)
 
@@ -881,8 +894,8 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
         username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
         notify_text = (
             f"🗑 <b>Удалён контейнер</b>\n"
-            f"{display} ({company})\n"
-            f"Оператор: {username}"
+            f"{display} ({escape(company)})\n"
+            f"Оператор: {escape(username)}"
         )
         await notify_groups(message.bot, message.bot._group_ids, notify_text)
 

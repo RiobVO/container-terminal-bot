@@ -1,7 +1,9 @@
 """Обработчики inline-кнопок: утренний отчёт в канале + команда /report."""
+import asyncio
 import logging
 import tempfile
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from aiogram import F, Router
@@ -15,6 +17,7 @@ from services.daily_report import (
 )
 from services.group_notify import notify_groups
 from services.report_generator import build_report
+from services.telegram_utils import send_long
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -50,9 +53,13 @@ async def morning_companies(callback: CallbackQuery) -> None:
     lines = ["📦 <b>По компаниям (на терминале)</b>", ""]
     for name in sorted(company_stats.keys(), key=str.lower):
         s = company_stats[name]
-        lines.append(f"🏢 {name}: {s['count']} шт — {_format_money(s['total'])} $")
+        lines.append(
+            f"🏢 {escape(name)}: {s['count']} шт — {_format_money(s['total'])} $"
+        )
 
-    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    # Длинный список компаний может вылезти за Telegram-лимит 4096 —
+    # режем на чанки.
+    await send_long(callback.message, "\n".join(lines))
     await callback.answer()
 
 
@@ -77,7 +84,8 @@ async def morning_warnings(callback: CallbackQuery) -> None:
         if level is None:
             continue
         display = c["display_number"]
-        company = c["company_name"] or "—"
+        # company_name из юзер-ввода — экранируем перед подстановкой в HTML.
+        company = escape(c["company_name"] or "—")
         icon = {"red": "🔴", "yellow": "🟡", "green": "💚"}[level]
         if level == "red":
             text = f"{icon} {display} ({company}) — {abs(days_left)} дн. на тарификации"
@@ -93,7 +101,8 @@ async def morning_warnings(callback: CallbackQuery) -> None:
     lines = ["⚠️ <b>Все предупреждения</b>", ""]
     lines.extend(w[1] for w in warnings)
 
-    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    # При сотне предупреждений текст может вылезти за 4096 символов.
+    await send_long(callback.message, "\n".join(lines))
     await callback.answer()
 
 
@@ -107,10 +116,16 @@ async def morning_xlsx(callback: CallbackQuery) -> None:
         await callback.answer("Нет данных для отчёта", show_alert=True)
         return
 
+    # Снимаем «часики» с кнопки сразу: openpyxl-генерация дальше — секунды.
+    # Иначе callback может протухнуть (>15 сек) и юзер видит вечное ожидание.
+    await callback.answer("⏳ Генерирую отчёт…")
+
     out_dir = Path(tempfile.gettempdir()) / "reports"
     filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
-    path = build_report(
+    # Синхронный openpyxl в отдельном потоке — не блокируем event loop.
+    path = await asyncio.to_thread(
+        build_report,
         containers, settings, out_dir, filename,
         group_field="arrival_date",
         summary_sheet_name="Сводка",
@@ -120,7 +135,6 @@ async def morning_xlsx(callback: CallbackQuery) -> None:
         FSInputFile(path, filename=filename),
         caption="📊 Отчёт по всем контейнерам",
     )
-    await callback.answer()
 
     try:
         path.unlink()
@@ -175,9 +189,14 @@ async def cmd_report_xlsx(callback: CallbackQuery) -> None:
         await callback.answer("Нет данных для отчёта", show_alert=True)
         return
 
+    # Снимаем «часики» сразу: дальше тяжёлая openpyxl-генерация и рассылка.
+    await callback.answer("⏳ Генерирую xlsx…")
+
     out_dir = Path(tempfile.gettempdir()) / "reports"
     filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    path = build_report(
+    # Синхронный openpyxl в отдельном потоке — не блокируем event loop.
+    path = await asyncio.to_thread(
+        build_report,
         containers, settings, out_dir, filename,
         group_field="arrival_date", summary_sheet_name="Сводка",
     )
@@ -191,8 +210,6 @@ async def cmd_report_xlsx(callback: CallbackQuery) -> None:
             )
         except Exception:
             logger.warning("Не удалось отправить xlsx в %s", gid)
-
-    await callback.answer("✅ xlsx отправлен в канал", show_alert=True)
 
     try:
         path.unlink()

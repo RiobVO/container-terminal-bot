@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from html import escape
 from pathlib import Path
 
 from db import containers as db_cont
@@ -106,7 +107,8 @@ async def build_morning_report() -> str:
             continue
 
         display = c["display_number"]
-        company = c["company_name"] or "—"
+        # company_name из пользовательского ввода — escape для Telegram HTML.
+        company = escape(c["company_name"] or "—")
 
         if level == "red":
             overdue = abs(days_left)

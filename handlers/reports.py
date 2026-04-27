@@ -7,9 +7,11 @@
 обслуживает все шесть комбинаций. Хэндлеры только собирают список
 контейнеров и параметры (group_field, имя файла, подпись) и вызывают его.
 """
+import asyncio
 import logging
 import tempfile
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from re import sub as re_sub
 
@@ -135,7 +137,9 @@ async def _generate_and_send(
     company_name = company["name"] if company is not None else None
 
     if company_name:
-        await message.answer(f"⏳ Генерирую отчёт по «{company_name}»…")
+        await message.answer(
+            f"⏳ Генерирую отчёт по «{escape(company_name)}»…"
+        )
     else:
         await message.answer("⏳ Генерирую отчёт…")
 
@@ -146,7 +150,10 @@ async def _generate_and_send(
     settings = await get_all_settings()
 
     filename = _build_filename(spec, company_name)
-    path = build_report(
+    # openpyxl-генерация синхронная и тяжёлая — без to_thread блокирует event
+    # loop на секунды, и весь бот зависает для всех пользователей.
+    path = await asyncio.to_thread(
+        build_report,
         list(containers),
         settings,
         _REPORT_DIR,

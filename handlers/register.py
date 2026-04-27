@@ -9,6 +9,7 @@
 """
 import logging
 from datetime import datetime
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -112,13 +113,13 @@ async def process_company(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     display = data["display_number"]
 
+    # Раньше шли два отдельных message.answer подряд. Второй уезжал
+    # ~200 мс после первого и юзер видел «дёрганый» интерфейс. Сливаем
+    # текст и клавиатуру в одно сообщение.
     await message.answer(
         f"📦 Контейнер <b>{display}</b>\n"
-        f"🏢 Компания: <b>{company_name}</b>\n\n"
-        "Когда контейнер прибыл на терминал?",
-    )
-    await message.answer(
-        "Выберите дату:",
+        f"🏢 Компания: <b>{escape(company_name)}</b>\n\n"
+        "Когда контейнер прибыл на терминал? Выберите дату:",
         reply_markup=register_arrival_date_reply_kb(),
     )
 
@@ -322,8 +323,8 @@ async def _finalize(
 
     await message.answer(
         f"✅ Контейнер <b>{display}</b> зарегистрирован\n\n"
-        f"🏢 Компания: <b>{company_name}</b>\n"
-        f"📦 Тип: {type_line}\n"
+        f"🏢 Компания: <b>{escape(company_name)}</b>\n"
+        f"📦 Тип: {escape(type_line)}\n"
         f"📅 Дата регистрации: {reg_dt}\n"
         f"{arrival_line}"
         f"{status_suffix}",
@@ -344,8 +345,8 @@ async def _finalize(
         status_text = "На терминале" if status == "on_terminal" else "В пути"
         notify_text = (
             f"📥 <b>Новый контейнер</b>\n"
-            f"{display} ({company_name}) — {container_type or 'тип не указан'}\n"
+            f"{display} ({escape(company_name)}) — {escape(container_type or 'тип не указан')}\n"
             f"Статус: {status_text}\n"
-            f"Оператор: {username}"
+            f"Оператор: {escape(username)}"
         )
         await notify_groups(message.bot, message.bot._group_ids, notify_text)

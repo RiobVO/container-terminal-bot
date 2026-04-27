@@ -1,9 +1,11 @@
 """Планировщик автоматических отчётов и бэкапов."""
+import asyncio
 import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
 
+import aiosqlite
 from aiogram import Bot
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -80,7 +82,20 @@ async def _backup_db(bot: Bot, backup_chat_id: int, db_path: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     backup_name = f"{src.stem}_{ts}{src.suffix}"
     backup_path = backup_dir / backup_name
-    shutil.copy2(src, backup_path)
+
+    # WAL: свежие записи лежат в .db-wal до чекпоинта. Если просто
+    # скопировать .db, в копии не будет последних транзакций. TRUNCATE
+    # сливает WAL в основной файл и обнуляет лог — после этого .db
+    # самодостаточен.
+    try:
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        logger.warning("WAL checkpoint перед бэкапом не удался", exc_info=True)
+
+    # Копирование SQLite-файла — синхронный I/O. Без to_thread бэкап
+    # каждые 6 часов подвешивает event loop на время копирования.
+    await asyncio.to_thread(shutil.copy2, src, backup_path)
     logger.info("Локальный бэкап: %s", backup_path)
 
     # Ротация: удаляем локальные бэкапы старше 7 дней
@@ -120,12 +135,17 @@ def init_scheduler(
     """Создаёт и возвращает настроенный планировщик."""
     scheduler = AsyncIOScheduler(timezone=timezone)
 
+    # misfire_grace_time: если бот лежал в момент cron-тика (рестарт,
+    # сетевая просадка), задание всё равно отработает — лишь бы запоздание
+    # уложилось в эти секунды. 5 минут запас для отчётов, 30 минут для
+    # бэкапа (его не критично сдвинуть).
     scheduler.add_job(
         _send_morning_report,
         CronTrigger(hour=report_hour, minute=0),
         args=[bot, group_ids],
         id="morning_report",
         name="Утренний отчёт",
+        misfire_grace_time=300,
     )
 
     scheduler.add_job(
@@ -134,6 +154,7 @@ def init_scheduler(
         args=[bot, group_ids],
         id="evening_report",
         name="Вечерний итог дня",
+        misfire_grace_time=300,
     )
 
     # Бэкап БД каждые 6 часов (03:00, 09:00, 15:00, 21:00)
@@ -144,6 +165,7 @@ def init_scheduler(
             args=[bot, backup_chat_id, db_path],
             id="db_backup",
             name="Бэкап БД",
+            misfire_grace_time=1800,
         )
 
     return scheduler
