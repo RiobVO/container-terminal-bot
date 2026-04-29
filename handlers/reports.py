@@ -71,7 +71,7 @@ _REPORT_SPECS: dict[str, dict[str, object]] = {
     _TYPE_MIXED: {
         "statuses": ("on_terminal", "departed"),
         "group_field": "arrival_date",
-        "summary_sheet": None,
+        "summary_sheet": "Все контейнеры",
         "file_prefix_all": "mixed_all",
         "file_prefix_company": "mixed",
         "caption_all": "✅ Отчёт по активным и вывезенным контейнерам готов!",
@@ -83,7 +83,7 @@ _REPORT_SPECS: dict[str, dict[str, object]] = {
     _TYPE_DEPARTED: {
         "statuses": ("departed",),
         "group_field": "departure_date",
-        "summary_sheet": None,
+        "summary_sheet": "Все вывезенные",
         "file_prefix_all": "departed_all",
         "file_prefix_company": "departed",
         "caption_all": "✅ Отчёт по вывезенным контейнерам готов!",
