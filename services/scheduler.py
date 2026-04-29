@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 # ID последнего закреплённого сообщения per group
 _pinned_messages: dict[int, int] = {}
 
+# Запас под HTML-теги до лимита Telegram (4096 символов на сообщение)
+_TG_MSG_LIMIT = 4000
+
 
 def _morning_keyboard() -> InlineKeyboardMarkup:
     """Inline-кнопки под утренним отчётом."""
@@ -31,10 +34,44 @@ def _morning_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _split_for_telegram(text: str, limit: int = _TG_MSG_LIMIT) -> list[str]:
+    """Разбивает текст по \\n на куски ≤ limit символов.
+
+    HTML-теги в утреннем отчёте открываются и закрываются в пределах одной
+    строки, поэтому склейка по строкам не порвёт разметку. Если отдельная
+    строка длиннее лимита, режется по символам — на практике не встречается.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        if len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(line), limit):
+                chunks.append(line[i:i + limit])
+            continue
+
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def _send_morning_report(bot: Bot, group_ids: frozenset[int]) -> None:
     """Отправляет утренний отчёт и закрепляет его."""
     text = await build_morning_report()
     kb = _morning_keyboard()
+    parts = _split_for_telegram(text)
 
     for gid in group_ids:
         try:
@@ -45,15 +82,23 @@ async def _send_morning_report(bot: Bot, group_ids: frozenset[int]) -> None:
                 except Exception:
                     pass
 
-            msg = await bot.send_message(
-                chat_id=gid, text=text, parse_mode="HTML", reply_markup=kb,
+            first_msg = await bot.send_message(
+                chat_id=gid, text=parts[0], parse_mode="HTML", reply_markup=kb,
             )
+
+            for extra in parts[1:]:
+                try:
+                    await bot.send_message(chat_id=gid, text=extra, parse_mode="HTML")
+                except Exception:
+                    logger.warning(
+                        "Не удалось отправить продолжение отчёта в %s", gid, exc_info=True,
+                    )
 
             try:
                 await bot.pin_chat_message(
-                    chat_id=gid, message_id=msg.message_id, disable_notification=True,
+                    chat_id=gid, message_id=first_msg.message_id, disable_notification=True,
                 )
-                _pinned_messages[gid] = msg.message_id
+                _pinned_messages[gid] = first_msg.message_id
             except Exception:
                 logger.warning("Не удалось закрепить отчёт в группе %s", gid)
 
