@@ -1,4 +1,5 @@
 """Тесты порядка FSM регистрации: номер → дата → компания → тип."""
+from db import companies as db_comp
 from db import containers as db_cont
 from handlers import register
 from states import ContainerSection, RegisterContainer
@@ -131,3 +132,56 @@ async def test_full_flow_creates_container(test_db, make_message, fsm_state):
     # После регистрации показывается карточка — FSM в ContainerSection.card,
     # откуда (Task 4) принимается номер следующего контейнера.
     assert await fsm_state.get_state() == ContainerSection.card.state
+
+
+async def test_process_company_rejects_container_number(
+    test_db, make_message, fsm_state
+):
+    """Номер следующего контейнера на шаге компании не создаёт компанию."""
+    await fsm_state.set_state(RegisterContainer.waiting_for_company)
+    await fsm_state.set_data(
+        {
+            "number": "CASS1234567",
+            "display_number": "CASS 1234567",
+            "status": "on_terminal",
+            "arrival_date": "2026-06-01 10:00:00",
+        }
+    )
+    msg = make_message("TEMU 7654321")
+    await register.process_company(msg, fsm_state, role="full")
+
+    assert await db_comp.list_companies() == []
+    assert (
+        await fsm_state.get_state()
+        == RegisterContainer.waiting_for_company.state
+    )
+    assert "похоже на номер" in msg.answer.call_args[0][0].lower()
+
+
+async def test_process_company_stale_session_resets(
+    test_db, make_message, fsm_state
+):
+    """Состояние без данных (пережило деплой) — мягкий сброс, не KeyError."""
+    await fsm_state.set_state(RegisterContainer.waiting_for_company)
+    msg = make_message("Ромашка")
+    await register.process_company(msg, fsm_state, role="full")
+
+    assert await fsm_state.get_state() is None
+    assert "устарела" in msg.answer.call_args[0][0].lower()
+    assert await db_comp.list_companies() == []
+
+
+async def test_finalize_incomplete_data_resets(
+    test_db, make_message, fsm_state
+):
+    """Сессия старого порядка шагов без company_id/status не падает."""
+    await fsm_state.set_state(RegisterContainer.waiting_for_type)
+    await fsm_state.set_data(
+        {"number": "CASS1234567", "display_number": "CASS 1234567"}
+    )
+    msg = make_message()
+    await register.type_skip(msg, fsm_state, role="full")
+
+    assert await fsm_state.get_state() is None
+    assert await db_cont.find_by_number("CASS1234567") is None
+    assert "устарела" in msg.answer.call_args[0][0].lower()
