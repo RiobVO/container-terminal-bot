@@ -320,14 +320,14 @@ async def containers_section_enter(
 
 
 async def _process_number_text(
-    message: Message, state: FSMContext, text: str
+    message: Message, state: FSMContext, text: str, role: str = "full"
 ) -> None:
     """Общая обработка текстового ввода номера контейнера.
 
-    Используется на главном экране и на экране выбора типа: пытается
-    нормализовать текст как номер. Существующий номер открывает карточку
-    (любого статуса), новый — запускает FSM регистрации, невалидный
-    формат даёт ошибку с примером.
+    Используется на главном экране, в поиске по типу и в карточке:
+    пытается нормализовать текст как номер. Существующий номер открывает
+    карточку (любого статуса), новый — запускает FSM регистрации,
+    невалидный формат даёт ошибку с примером.
     """
     result = normalize_container_number(text)
     if result is None:
@@ -341,7 +341,9 @@ async def _process_number_text(
 
     if existing:
         source = "departed" if existing["status"] == "departed" else "active"
-        await _send_container_card(message, existing, state, source=source)
+        await _send_container_card(
+            message, existing, state, source=source, role=role
+        )
         return
 
     from handlers.register import start_registration
@@ -381,7 +383,7 @@ async def menu_text_input(
     text = (message.text or "").strip()
     if not text or text in RESERVED_BUTTON_TEXTS:
         return
-    await _process_number_text(message, state, text)
+    await _process_number_text(message, state, text, role=role)
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +418,7 @@ async def search_text_input(
     text = (message.text or "").strip()
     if not text or text in RESERVED_BUTTON_TEXTS:
         return
-    await _process_number_text(message, state, text)
+    await _process_number_text(message, state, text, role=role)
 
 
 # ---------------------------------------------------------------------------
@@ -583,10 +585,22 @@ async def card_delete_ask(message: Message, state: FSMContext) -> None:
 
 
 @router.message(ContainerSection.card)
-async def card_fallback(message: Message) -> None:
-    """Любой не-зарезервированный текст в карточке игнорируем."""
-    # В состоянии card любой другой текст НЕ валидируем как номер.
-    return
+async def card_fallback(
+    message: Message, state: FSMContext, role: str
+) -> None:
+    """Текст в карточке трактуем как номер следующего контейнера.
+
+    Кнопки карточки обрабатываются своими хендлерами выше; системные
+    тексты отфильтровываются. Остальное идёт в общий обработчик номера —
+    как на главном экране раздела: операторы вводят номера сериями,
+    возврат «К списку» ради каждого следующего номера не нужен.
+    """
+    if role not in ("full", "operator"):
+        return
+    text = (message.text or "").strip()
+    if not text or text in RESERVED_BUTTON_TEXTS:
+        return
+    await _process_number_text(message, state, text, role=role)
 
 
 # ---------------------------------------------------------------------------
