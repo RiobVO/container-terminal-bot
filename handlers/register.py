@@ -1,14 +1,13 @@
 """FSM регистрации нового контейнера — reply-first.
 
-Шаги:
+Шаги (порядок утверждён клиентом 2026-06-04):
 1. Ввод номера (приходит извне — из handlers/containers.py).
-2. Выбор даты прибытия: «Сегодня» / «Ещё в пути» / «Ввести дату вручную».
-3. Выбор компании (reply: список существующих + ввод нового названия).
-4. Выбор типа контейнера.
+2. Выбор компании (reply: список существующих + ввод нового названия).
+3. Выбор типа контейнера.
+4. Выбор даты прибытия: «Сегодня» / «Ещё в пути» / «Ввести дату вручную».
 5. Сохранение в БД + подтверждение + карточка.
 
-Имена FSM-состояний намеренно не соответствуют порядку шагов
-(waiting_for_company наступает после waiting_for_arrival_date): имена
+Имена и набор FSM-состояний при перестановках шагов не менялись: имена
 сериализованы строками в Redis у live-сессий, переименование сломало бы
 операторов, застрявших посреди флоу в момент деплоя.
 """
@@ -52,16 +51,20 @@ async def start_registration(
     normalized: str,
     display: str,
 ) -> None:
-    """Начинает флоу регистрации нового контейнера с шага даты прибытия."""
-    await state.set_state(RegisterContainer.waiting_for_arrival_date)
+    """Начинает флоу регистрации нового контейнера с шага компании."""
+    companies = await db_comp.list_companies()
+
+    await state.set_state(RegisterContainer.waiting_for_company)
     # set_data, а не update_data: регистрация может стартовать из карточки,
     # остаточные ключи (container_id, card_source) не должны пережить старт.
     await state.set_data({"number": normalized, "display_number": display})
 
     await message.answer(
         f"📦 <b>Оформление прибытия контейнера {display}</b>\n\n"
-        "Когда контейнер прибыл на терминал?",
-        reply_markup=register_arrival_date_reply_kb(),
+        "Выберите компанию из списка или введите название новой:",
+        reply_markup=register_company_reply_kb(
+            [c["name"] for c in companies]
+        ),
     )
 
 
@@ -73,7 +76,7 @@ async def _cancel_and_go_home(
 
 
 # ---------------------------------------------------------------------------
-# Шаг 3: выбор / создание компании
+# Шаг 2: выбор / создание компании
 # ---------------------------------------------------------------------------
 
 
@@ -98,11 +101,9 @@ async def process_company(
 ) -> None:
     data = await state.get_data()
     display = data.get("display_number")
-    if display is None or data.get("status") is None:
-        # Сессия пережила деплой/сбой и потеряла данные — в том числе
-        # сессия старого порядка шагов (дата шла после компании, status
-        # ещё не записан). Мягкий сброс ДО создания компании, чтобы не
-        # плодить компании-сироты.
+    if display is None:
+        # Сессия пережила деплой/сбой и потеряла данные — мягкий сброс
+        # ДО создания компании, чтобы не плодить компании-сироты.
         logger.warning(
             "Неполные FSM-данные на шаге компании: user=%s, keys=%s",
             message.from_user.id if message.from_user else "?",
@@ -151,7 +152,7 @@ async def process_company(
 
 
 # ---------------------------------------------------------------------------
-# Шаг 2: дата прибытия (reply)
+# Шаг 4: дата прибытия (reply, финализирует регистрацию)
 # ---------------------------------------------------------------------------
 
 
@@ -167,25 +168,12 @@ async def _go_to_type_step(message: Message, state: FSMContext) -> None:
     )
 
 
-async def _go_to_company_step(message: Message, state: FSMContext) -> None:
-    """Шаг выбора компании: после даты, перед типом."""
-    companies = await db_comp.list_companies()
-    await state.set_state(RegisterContainer.waiting_for_company)
-
-    data = await state.get_data()
-    display = data.get("display_number", "")
-    if data.get("status") == "in_transit":
-        date_line = "🚚 Ещё в пути"
-    else:
-        date_line = f"📅 Прибыл: {_fmt_arrival_display(data.get('arrival_date'))}"
-
+async def _go_to_date_step(message: Message, state: FSMContext) -> None:
+    """Шаг даты прибытия — последний перед сохранением."""
+    await state.set_state(RegisterContainer.waiting_for_arrival_date)
     await message.answer(
-        f"📦 Контейнер <b>{display}</b>\n"
-        f"{date_line}\n\n"
-        "Выберите компанию из списка или введите название новой:",
-        reply_markup=register_company_reply_kb(
-            [c["name"] for c in companies]
-        ),
+        "Когда контейнер прибыл на терминал?",
+        reply_markup=register_arrival_date_reply_kb(),
     )
 
 
@@ -201,17 +189,21 @@ async def arrival_cancel(
 @router.message(
     RegisterContainer.waiting_for_arrival_date, F.text == BTN_ARRIVAL_TODAY
 )
-async def arrival_today(message: Message, state: FSMContext) -> None:
+async def arrival_today(
+    message: Message, state: FSMContext, role: str
+) -> None:
     await state.update_data(status="on_terminal", arrival_date=_now_str())
-    await _go_to_company_step(message, state)
+    await _finalize(message, state, role)
 
 
 @router.message(
     RegisterContainer.waiting_for_arrival_date, F.text == BTN_ARRIVAL_TRANSIT
 )
-async def arrival_transit(message: Message, state: FSMContext) -> None:
+async def arrival_transit(
+    message: Message, state: FSMContext, role: str
+) -> None:
     await state.update_data(status="in_transit", arrival_date=None)
-    await _go_to_company_step(message, state)
+    await _finalize(message, state, role)
 
 
 @router.message(
@@ -247,7 +239,7 @@ async def manual_date_cancel(
 
 @router.message(RegisterContainer.waiting_for_manual_date)
 async def manual_date_process(
-    message: Message, state: FSMContext
+    message: Message, state: FSMContext, role: str
 ) -> None:
     text = (message.text or "").strip()
     try:
@@ -262,11 +254,11 @@ async def manual_date_process(
 
     arrival_str = parsed.strftime("%Y-%m-%d %H:%M:%S")
     await state.update_data(status="on_terminal", arrival_date=arrival_str)
-    await _go_to_company_step(message, state)
+    await _finalize(message, state, role)
 
 
 # ---------------------------------------------------------------------------
-# Шаг 4: тип контейнера (reply)
+# Шаг 3: тип контейнера (reply)
 # ---------------------------------------------------------------------------
 
 
@@ -278,17 +270,17 @@ async def type_cancel(
 
 
 @router.message(RegisterContainer.waiting_for_type, F.text == BTN_REG_SKIP_TYPE)
-async def type_skip(message: Message, state: FSMContext, role: str) -> None:
-    await _finalize(message, state, role, container_type=None)
+async def type_skip(message: Message, state: FSMContext) -> None:
+    await state.update_data(container_type=None)
+    await _go_to_date_step(message, state)
 
 
 @router.message(
     RegisterContainer.waiting_for_type, F.text.in_(CONTAINER_TYPES)
 )
-async def type_selected(
-    message: Message, state: FSMContext, role: str
-) -> None:
-    await _finalize(message, state, role, container_type=message.text)
+async def type_selected(message: Message, state: FSMContext) -> None:
+    await state.update_data(container_type=message.text)
+    await _go_to_date_step(message, state)
 
 
 @router.message(RegisterContainer.waiting_for_type)
@@ -318,7 +310,6 @@ async def _finalize(
     message: Message,
     state: FSMContext,
     role: str,
-    container_type: str | None,
 ) -> None:
     data = await state.get_data()
     required = (
@@ -352,6 +343,9 @@ async def _finalize(
     company_name = data["company_name"]
     status = data["status"]
     arrival_date = data.get("arrival_date")
+    # Тип не в required: «Пропустить» и сессии, пережившие смену порядка
+    # шагов, легитимно дают None («не указан»).
+    container_type = data.get("container_type")
 
     container_id = await db_cont.add_container(
         number=number,

@@ -52,7 +52,7 @@ async def test_card_new_number_starts_registration(
 
     assert (
         await fsm_state.get_state()
-        == RegisterContainer.waiting_for_arrival_date.state
+        == RegisterContainer.waiting_for_company.state
     )
     assert await fsm_state.get_data() == {
         "number": "HLXU7777777",
