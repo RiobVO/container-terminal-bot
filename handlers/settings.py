@@ -11,8 +11,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from config import load_config
+from db import audit as db_audit
 from db import users as db_users
-from db.settings import get_all_settings, set_setting
+from db.settings import get_all_settings, get_setting, set_setting
 from keyboards.main import BTN_BACK, BTN_SETTINGS, main_menu
 from keyboards.settings import (
     BTN_CANCEL_BACK,
@@ -33,6 +34,12 @@ from keyboards.settings import (
     settings_reply_kb,
     user_role_reply_kb,
     users_list_reply_kb,
+)
+from services.formatters import (
+    parse_float,
+    parse_int_nonneg,
+    parse_int_positive,
+    period_label,
 )
 from states import (
     DefaultsSection,
@@ -189,10 +196,20 @@ async def role_set(message: Message, state: FSMContext) -> None:
         return
 
     new_role = _ROLE_BY_BTN[message.text]
+    # Старая роль читается до обновления — для пары «старое → новое».
+    user = await db_users.get_user(tg_id)
     await db_users.set_role(tg_id, new_role)
     logger.info(
         "Роль: tg_id=%s -> %s (by %s)",
         tg_id, new_role, message.from_user.id,
+    )
+    old_role = user["role"] if user else "?"
+    label = (user["full_name"] or user["username"]) if user else None
+    await db_audit.add_entry(
+        message.from_user, "изменена роль", "user",
+        tg_id, label or str(tg_id),
+        f"роль: {ROLE_NAMES.get(old_role, old_role)} → "
+        f"{ROLE_NAMES[new_role]}",
     )
     await message.answer("✅ Роль обновлена.")
     await _show_users(message, state)
@@ -206,14 +223,6 @@ async def role_fallback(message: Message) -> None:
 # ---------------------------------------------------------------------------
 # Стандартные тарифы
 # ---------------------------------------------------------------------------
-
-
-def _period_label(period_days: int) -> str:
-    if period_days <= 1:
-        return "ежедневный тариф"
-    if period_days == 30:
-        return "ежемесячный тариф"
-    return f"каждые {period_days} дн."
 
 
 @router.message(SettingsSection.menu, F.text == BTN_SET_DEFAULTS)
@@ -235,7 +244,7 @@ async def _show_defaults(message: Message, state: FSMContext) -> None:
         f"💵 Стоимость входа: {entry} $\n"
         f"🆓 Бесплатных дней: {free}\n"
         f"💰 Ставка хранения: {rate} $ за {period} дн.\n"
-        f"📅 Период начисления: {period} дн. ({_period_label(period)})\n\n"
+        f"📅 Период начисления: {period} дн. ({period_label(period)})\n\n"
         "Выберите, что изменить:"
     )
     await state.set_state(DefaultsSection.view)
@@ -298,7 +307,7 @@ async def def_edit_storage_period(
     await state.set_state(EditDefaultStoragePeriod.waiting_for_value)
     await message.answer(
         f"📅 Текущий период начисления: <b>{current} дн.</b> "
-        f"({_period_label(current)})\n\n"
+        f"({period_label(current)})\n\n"
         "Введите новое значение (целое число ≥ 1, "
         "1 = ежедневный, 30 = ежемесячный):",
         reply_markup=default_edit_reply_kb(),
@@ -315,6 +324,18 @@ async def defaults_fallback(message: Message) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _set_default_tariff(
+    message: Message, key: str, label: str, value: float
+) -> None:
+    """Сохраняет стандартный тариф и пишет аудит «старое → новое»."""
+    old = await get_setting(key)
+    await set_setting(key, value)
+    await db_audit.add_entry(
+        message.from_user, "изменён стандартный тариф", "settings",
+        None, key, f"{label}: {old} → {value}",
+    )
+
+
 @router.message(EditDefaultEntry.waiting_for_value, F.text == BTN_CANCEL_BACK)
 async def def_entry_cancel(message: Message, state: FSMContext) -> None:
     await _show_defaults(message, state)
@@ -322,11 +343,13 @@ async def def_entry_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(EditDefaultEntry.waiting_for_value)
 async def def_entry_value(message: Message, state: FSMContext) -> None:
-    val = _parse_float(message.text)
+    val = parse_float(message.text)
     if val is None:
         await message.answer("❌ Введите число (например: 15 или 25.5)")
         return
-    await set_setting("default_entry_fee", val)
+    await _set_default_tariff(
+        message, "default_entry_fee", "стоимость входа", val
+    )
     await message.answer(f"✅ Стандартная стоимость входа: <b>{val} $</b>")
     await _show_defaults(message, state)
 
@@ -338,11 +361,13 @@ async def def_free_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(EditDefaultFreeDays.waiting_for_value)
 async def def_free_value(message: Message, state: FSMContext) -> None:
-    val = _parse_int_nonneg(message.text)
+    val = parse_int_nonneg(message.text)
     if val is None:
         await message.answer("❌ Введите целое число ≥ 0")
         return
-    await set_setting("default_free_days", float(val))
+    await _set_default_tariff(
+        message, "default_free_days", "бесплатные дни", float(val)
+    )
     await message.answer(f"✅ Бесплатных дней: <b>{val}</b>")
     await _show_defaults(message, state)
 
@@ -356,11 +381,13 @@ async def def_rate_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(EditDefaultStorageRate.waiting_for_value)
 async def def_rate_value(message: Message, state: FSMContext) -> None:
-    val = _parse_float(message.text)
+    val = parse_float(message.text)
     if val is None:
         await message.answer("❌ Введите число (например: 0.5 или 20)")
         return
-    await set_setting("default_storage_rate", val)
+    await _set_default_tariff(
+        message, "default_storage_rate", "ставка хранения", val
+    )
     await message.answer(f"✅ Стандартная ставка хранения: <b>{val} $</b>")
     await _show_defaults(message, state)
 
@@ -374,44 +401,18 @@ async def def_period_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(EditDefaultStoragePeriod.waiting_for_value)
 async def def_period_value(message: Message, state: FSMContext) -> None:
-    val = _parse_int_positive(message.text)
+    val = parse_int_positive(message.text)
     if val is None:
         await message.answer(
             "❌ Введите целое число ≥ 1 (1 = ежедневный, 30 = ежемесячный)"
         )
         return
-    await set_setting("default_storage_period_days", float(val))
+    await _set_default_tariff(
+        message, "default_storage_period_days", "период начисления",
+        float(val),
+    )
     await message.answer(
         f"✅ Стандартный период начисления: <b>{val} дн.</b> "
-        f"({_period_label(val)})"
+        f"({period_label(val)})"
     )
     await _show_defaults(message, state)
-
-
-# ---------------------------------------------------------------------------
-# Парсеры
-# ---------------------------------------------------------------------------
-
-
-def _parse_float(text: str | None) -> float | None:
-    try:
-        v = float((text or "").strip().replace(",", "."))
-        return v if v >= 0 else None
-    except ValueError:
-        return None
-
-
-def _parse_int_nonneg(text: str | None) -> int | None:
-    try:
-        v = int((text or "").strip())
-        return v if v >= 0 else None
-    except ValueError:
-        return None
-
-
-def _parse_int_positive(text: str | None) -> int | None:
-    try:
-        v = int((text or "").strip())
-        return v if v >= 1 else None
-    except ValueError:
-        return None

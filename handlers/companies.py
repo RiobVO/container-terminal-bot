@@ -10,6 +10,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from db import audit as db_audit
 from db import companies as db_comp
 from db import containers as db_cont
 from db.settings import get_all_settings
@@ -33,6 +34,14 @@ from keyboards.companies import (
 )
 from keyboards.main import BTN_BACK, BTN_COMPANIES, main_menu
 from services.calculator import calculate_container_cost
+from services.formatters import (
+    fmt_short_date,
+    mark,
+    parse_float,
+    parse_int_nonneg,
+    parse_int_positive,
+    period_label,
+)
 from states import (
     CompaniesSection,
     EditCompanyEntry,
@@ -51,52 +60,32 @@ router = Router()
 # ---------------------------------------------------------------------------
 
 
-def _fmt_short_date(val: str | None) -> str:
-    if not val:
-        return "—"
-    from datetime import datetime
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(val, fmt).strftime("%d.%m.%Y")
-        except ValueError:
-            continue
-    return val
+def _fmt_tariff(value) -> str:
+    """Значение тарифного параметра для аудита: NULL = стандарт."""
+    return "стандарт" if value is None else str(value)
 
 
-def _parse_float(text: str | None) -> float | None:
-    try:
-        v = float((text or "").strip().replace(",", "."))
-        return v if v >= 0 else None
-    except ValueError:
-        return None
+async def _update_tariff_field(
+    message: Message,
+    company_id: int,
+    column: str,
+    label: str,
+    setter,
+    value,
+) -> None:
+    """Обновляет тарифный параметр и пишет аудит «старое → новое».
 
-
-def _parse_int_nonneg(text: str | None) -> int | None:
-    try:
-        v = int((text or "").strip())
-        return v if v >= 0 else None
-    except ValueError:
-        return None
-
-
-def _parse_int_positive(text: str | None) -> int | None:
-    try:
-        v = int((text or "").strip())
-        return v if v >= 1 else None
-    except ValueError:
-        return None
-
-
-def _mark(is_custom: bool) -> str:
-    return "индивидуальный" if is_custom else "стандартный"
-
-
-def _period_label(period_days: int) -> str:
-    if period_days <= 1:
-        return "ежедневный тариф"
-    if period_days == 30:
-        return "ежемесячный тариф"
-    return f"каждые {period_days} дн."
+    Старое значение читается до обновления; сброс на стандарт — это
+    тоже изменение тарифа и попадает в лог (value=None → «стандарт»).
+    """
+    company = await db_comp.get_company(company_id)
+    await setter(company_id, value)
+    if company:
+        await db_audit.add_entry(
+            message.from_user, "изменён тариф", "company",
+            company_id, company["name"],
+            f"{label}: {_fmt_tariff(company[column])} → {_fmt_tariff(value)}",
+        )
 
 
 async def _show_companies_list(message: Message, state: FSMContext) -> None:
@@ -163,11 +152,11 @@ async def _show_company_card(
         else default_period
     )
 
-    entry_mark = _mark(company["entry_fee"] is not None)
-    free_mark = _mark(company["free_days"] is not None)
-    rate_mark = _mark(company["storage_rate"] is not None)
-    period_mark = _mark(company["storage_period_days"] is not None)
-    period_label = _period_label(int(storage_period))
+    entry_mark = mark(company["entry_fee"] is not None)
+    free_mark = mark(company["free_days"] is not None)
+    rate_mark = mark(company["storage_rate"] is not None)
+    period_mark = mark(company["storage_period_days"] is not None)
+    period_text = period_label(int(storage_period))
 
     active_containers = await db_cont.active_for_company(company_id)
     total_ever = await db_comp.count_total_containers(company_id)
@@ -190,7 +179,7 @@ async def _show_company_card(
             total_debt += cost["total"]
 
     active_lines = [
-        f"📦 {c['display_number']} (с {_fmt_short_date(c['arrival_date'])})"
+        f"📦 {c['display_number']} (с {fmt_short_date(c['arrival_date'])})"
         for c in active_containers
     ]
     active_text = "\n".join(active_lines) if active_lines else "—"
@@ -201,7 +190,7 @@ async def _show_company_card(
         f"🆓 Бесплатных дней: {free_days} ({free_mark})\n"
         f"💵 Платное хранение: {storage_rate} $ за {storage_period} дн. "
         f"({rate_mark})\n"
-        f"📅 Период начисления: {period_label} ({period_mark})\n\n"
+        f"📅 Период начисления: {period_text} ({period_mark})\n\n"
         f"📊 <b>Статистика:</b>\n"
         f"• Занятых контейнеров: {active_count}\n"
         f"• Всего контейнеров за время: {total_ever}\n"
@@ -291,6 +280,9 @@ async def companies_add_process(
 
     company_id = await db_comp.add_company(name=name)
     logger.info("Компания создана из списка: %s (id=%s)", name, company_id)
+    await db_audit.add_entry(
+        message.from_user, "создана компания", "company", company_id, name
+    )
     await message.answer(f"✅ Компания «{name}» создана")
     await _show_company_card(message, state, company_id)
 
@@ -344,7 +336,7 @@ async def card_edit_entry(message: Message, state: FSMContext) -> None:
         if company["entry_fee"] is not None
         else default_val
     )
-    label = _mark(company["entry_fee"] is not None)
+    label = mark(company["entry_fee"] is not None)
     await _begin_edit_field(
         message, state, EditCompanyEntry.waiting_for_value,
         title="💰 <b>Стоимость входа</b>",
@@ -369,7 +361,7 @@ async def card_edit_free_days(message: Message, state: FSMContext) -> None:
         if company["free_days"] is not None
         else default_val
     )
-    label = _mark(company["free_days"] is not None)
+    label = mark(company["free_days"] is not None)
     await _begin_edit_field(
         message, state, EditCompanyFreeDays.waiting_for_value,
         title="🆓 <b>Бесплатные дни</b>",
@@ -396,7 +388,7 @@ async def card_edit_storage_rate(
         if company["storage_rate"] is not None
         else default_val
     )
-    label = _mark(company["storage_rate"] is not None)
+    label = mark(company["storage_rate"] is not None)
     await _begin_edit_field(
         message, state, EditCompanyStorageRate.waiting_for_value,
         title="💵 <b>Ставка платного хранения</b>",
@@ -425,13 +417,13 @@ async def card_edit_storage_period(
         if company["storage_period_days"] is not None
         else default_val
     )
-    label = _mark(company["storage_period_days"] is not None)
+    label = mark(company["storage_period_days"] is not None)
     await _begin_edit_field(
         message, state, EditCompanyStoragePeriod.waiting_for_value,
         title="📅 <b>Период начисления</b>",
         current_text=(
             f"Текущий период: {current} дн. "
-            f"({_period_label(int(current))}, {label})"
+            f"({period_label(int(current))}, {label})"
         ),
         prompt=(
             "Введите количество дней в одном периоде (целое число ≥ 1).\n"
@@ -504,6 +496,9 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
     name = company["name"]
     await db_comp.delete_company(company_id)
     logger.info("Компания удалена: id=%s name=%s", company_id, name)
+    await db_audit.add_entry(
+        message.from_user, "удалена компания", "company", company_id, name
+    )
     await message.answer(f"✅ Компания «{name}» удалена")
     await _show_companies_list(message, state)
 
@@ -538,19 +533,25 @@ async def edit_entry_cancel(message: Message, state: FSMContext) -> None:
 @router.message(EditCompanyEntry.waiting_for_value, F.text == BTN_RESET_DEFAULT)
 async def edit_entry_reset(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    await db_comp.update_entry_fee(data["company_id"], None)
+    await _update_tariff_field(
+        message, data["company_id"], "entry_fee", "стоимость входа",
+        db_comp.update_entry_fee, None,
+    )
     await message.answer("✅ Сброшено на стандартную")
     await _return_to_card(message, state)
 
 
 @router.message(EditCompanyEntry.waiting_for_value)
 async def edit_entry_value(message: Message, state: FSMContext) -> None:
-    val = _parse_float(message.text)
+    val = parse_float(message.text)
     if val is None:
         await message.answer("❌ Введите число (например: 15 или 25.5)")
         return
     data = await state.get_data()
-    await db_comp.update_entry_fee(data["company_id"], val)
+    await _update_tariff_field(
+        message, data["company_id"], "entry_fee", "стоимость входа",
+        db_comp.update_entry_fee, val,
+    )
     await _return_to_card(message, state)
 
 
@@ -567,19 +568,25 @@ async def edit_free_cancel(message: Message, state: FSMContext) -> None:
 )
 async def edit_free_reset(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    await db_comp.update_free_days(data["company_id"], None)
+    await _update_tariff_field(
+        message, data["company_id"], "free_days", "бесплатные дни",
+        db_comp.update_free_days, None,
+    )
     await message.answer("✅ Сброшено на стандартное")
     await _return_to_card(message, state)
 
 
 @router.message(EditCompanyFreeDays.waiting_for_value)
 async def edit_free_value(message: Message, state: FSMContext) -> None:
-    val = _parse_int_nonneg(message.text)
+    val = parse_int_nonneg(message.text)
     if val is None:
         await message.answer("❌ Введите целое число ≥ 0 (например: 30)")
         return
     data = await state.get_data()
-    await db_comp.update_free_days(data["company_id"], val)
+    await _update_tariff_field(
+        message, data["company_id"], "free_days", "бесплатные дни",
+        db_comp.update_free_days, val,
+    )
     await _return_to_card(message, state)
 
 
@@ -596,19 +603,25 @@ async def edit_rate_cancel(message: Message, state: FSMContext) -> None:
 )
 async def edit_rate_reset(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    await db_comp.update_storage_rate(data["company_id"], None)
+    await _update_tariff_field(
+        message, data["company_id"], "storage_rate", "ставка хранения",
+        db_comp.update_storage_rate, None,
+    )
     await message.answer("✅ Сброшено на стандартную")
     await _return_to_card(message, state)
 
 
 @router.message(EditCompanyStorageRate.waiting_for_value)
 async def edit_rate_value(message: Message, state: FSMContext) -> None:
-    val = _parse_float(message.text)
+    val = parse_float(message.text)
     if val is None:
         await message.answer("❌ Введите число (например: 0.5 или 20)")
         return
     data = await state.get_data()
-    await db_comp.update_storage_rate(data["company_id"], val)
+    await _update_tariff_field(
+        message, data["company_id"], "storage_rate", "ставка хранения",
+        db_comp.update_storage_rate, val,
+    )
     await _return_to_card(message, state)
 
 
@@ -627,21 +640,27 @@ async def edit_period_cancel(message: Message, state: FSMContext) -> None:
 )
 async def edit_period_reset(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    await db_comp.update_storage_period_days(data["company_id"], None)
+    await _update_tariff_field(
+        message, data["company_id"], "storage_period_days",
+        "период начисления", db_comp.update_storage_period_days, None,
+    )
     await message.answer("✅ Сброшено на стандартный")
     await _return_to_card(message, state)
 
 
 @router.message(EditCompanyStoragePeriod.waiting_for_value)
 async def edit_period_value(message: Message, state: FSMContext) -> None:
-    val = _parse_int_positive(message.text)
+    val = parse_int_positive(message.text)
     if val is None:
         await message.answer(
             "❌ Введите целое число ≥ 1 (1 = ежедневный, 30 = ежемесячный)"
         )
         return
     data = await state.get_data()
-    await db_comp.update_storage_period_days(data["company_id"], val)
+    await _update_tariff_field(
+        message, data["company_id"], "storage_period_days",
+        "период начисления", db_comp.update_storage_period_days, val,
+    )
     await _return_to_card(message, state)
 
 
@@ -665,5 +684,12 @@ async def rename_process(message: Message, state: FSMContext) -> None:
     if existing and existing["id"] != company_id:
         await message.answer(f"❌ Компания «{name}» уже существует.")
         return
+    # Старое имя читается до обновления — для пары «старое → новое».
+    company = await db_comp.get_company(company_id)
     await db_comp.rename_company(company_id, name)
+    if company:
+        await db_audit.add_entry(
+            message.from_user, "переименована компания", "company",
+            company_id, name, f"название: {company['name']} → {name}",
+        )
     await _return_to_card(message, state)

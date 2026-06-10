@@ -59,25 +59,28 @@ def _make_backup(db_path: str) -> str:
 
 
 async def _needs_v0_to_v1(conn: aiosqlite.Connection) -> bool:
-    """v0: companies имел storage_period_days без monthly_rate."""
+    """v0: старый тариф в companies и containers ещё без колонки status.
+
+    По набору колонок companies честная v0 неотличима от v2 — обе содержат
+    free_days / storage_rate / storage_period_days (именно их читает
+    _migrate_v0_to_v1 из companies_old). Поэтому решающий признак —
+    containers.status: колонка появилась в миграции v0→v1 и присутствует
+    во всех последующих ревизиях (schema.py создаёт её всегда), а в v0
+    её не было. v1 отсекается по monthly_rate и отсутствию тарифных колонок.
+    """
     if not await _has_table(conn, "companies"):
         return False
-    has_storage_period = await _has_column(
-        conn, "companies", "storage_period_days"
-    )
-    has_monthly = await _has_column(conn, "companies", "monthly_rate")
-    has_storage_rate_col = await _has_column(
-        conn, "companies", "storage_rate"
-    )
-    # v0 признак: есть storage_period_days, но нет monthly_rate
-    # И НЕТ одновременного набора {entry_fee, free_days, storage_rate,
-    # storage_period_days} как в v2 (в v0 не было free_days как
-    # per-company колонки — она хранилась в global_settings).
-    return (
-        has_storage_period
-        and not has_monthly
-        and not has_storage_rate_col
-    )
+    if not await _has_table(conn, "containers"):
+        return False
+    # v1: companies(entry_fee, monthly_rate) — это не v0.
+    if await _has_column(conn, "companies", "monthly_rate"):
+        return False
+    # Миграция читает эти колонки из companies_old — без них она невозможна.
+    for col in ("free_days", "storage_rate", "storage_period_days"):
+        if not await _has_column(conn, "companies", col):
+            return False
+    # Единственное, что отличает v0 от v2: в v0 containers без status.
+    return not await _has_column(conn, "containers", "status")
 
 
 async def _needs_v1_to_v2(conn: aiosqlite.Connection) -> bool:
@@ -344,6 +347,42 @@ async def _add_operator_role(conn: aiosqlite.Connection) -> None:
     logger.info("Роль operator добавлена")
 
 
+async def _needs_audit_log(conn: aiosqlite.Connection) -> bool:
+    """Проверяет, нужна ли таблица audit_log (появилась после v2).
+
+    Создаём только в БД с нашей схемой (есть containers) — чужие или
+    пустые файлы не трогаем, как и остальные детекторы.
+    """
+    if not await _has_table(conn, "containers"):
+        return False
+    return not await _has_table(conn, "audit_log")
+
+
+async def _create_audit_log(conn: aiosqlite.Connection) -> None:
+    """Создаёт append-only таблицу аудита и индекс.
+
+    Строго аддитивно: существующие таблицы и данные не изменяются.
+    DDL обязан совпадать со schema.py (для свежих установок).
+    """
+    logger.info("Создаю таблицу audit_log...")
+    await conn.executescript("""
+        CREATE TABLE audit_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            actor_tg_id   INTEGER,
+            actor_name    TEXT,
+            action        TEXT NOT NULL,
+            entity_type   TEXT NOT NULL
+                          CHECK (entity_type IN ('container', 'company', 'user', 'settings')),
+            entity_id     INTEGER,
+            entity_label  TEXT,
+            details       TEXT
+        );
+        CREATE INDEX idx_audit_entity ON audit_log(entity_type, entity_id);
+    """)
+    logger.info("Таблица audit_log создана")
+
+
 async def run_migrations(db_path: str) -> None:
     """Выполняет все необходимые миграции последовательно."""
     if not Path(db_path).exists():
@@ -354,8 +393,9 @@ async def run_migrations(db_path: str) -> None:
         need_v0 = await _needs_v0_to_v1(conn)
         need_v1 = not need_v0 and await _needs_v1_to_v2(conn)
         need_operator = await _needs_operator_role(conn)
+        need_audit = await _needs_audit_log(conn)
 
-        if not need_v0 and not need_v1 and not need_operator:
+        if not need_v0 and not need_v1 and not need_operator and not need_audit:
             logger.info("Миграция не требуется")
             return
 
@@ -372,6 +412,10 @@ async def run_migrations(db_path: str) -> None:
 
         if need_operator:
             await _add_operator_role(conn)
+            await conn.commit()
+
+        if need_audit:
+            await _create_audit_log(conn)
             await conn.commit()
 
         logger.info("Миграция завершена успешно")

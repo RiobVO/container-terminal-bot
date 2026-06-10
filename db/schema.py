@@ -38,4 +38,19 @@ CREATE TABLE IF NOT EXISTS users (
                CHECK (role IN ('full', 'operator', 'reports_only', 'none')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    actor_tg_id   INTEGER,
+    actor_name    TEXT,
+    action        TEXT NOT NULL,
+    entity_type   TEXT NOT NULL
+                  CHECK (entity_type IN ('container', 'company', 'user', 'settings')),
+    entity_id     INTEGER,
+    entity_label  TEXT,
+    details       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
 """

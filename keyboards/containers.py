@@ -21,6 +21,7 @@ BTN_CHANGE_NUMBER = "✏️ Изменить номер"
 BTN_CHANGE_TYPE = "📦 Изменить тип"
 BTN_CHANGE_COMPANY = "🏢 Сменить компанию"
 BTN_DELETE = "🗑 Удалить запись"
+BTN_HISTORY = "📜 История"
 
 # Поток выбора даты вывоза. Тексты совпадают с кнопками FSM регистрации
 # (📅 Сегодня / ✏️ Ввести дату вручную / ◀ Отмена), но это разные
@@ -57,6 +58,7 @@ RESERVED_BUTTON_TEXTS: frozenset[str] = frozenset({
     BTN_CHANGE_TYPE,
     BTN_CHANGE_COMPANY,
     BTN_DELETE,
+    BTN_HISTORY,
     BTN_CONFIRM_DELETE,
     BTN_CANCEL,
     *CONTAINER_TYPES,
@@ -92,6 +94,8 @@ RESERVED_BUTTON_TEXTS: frozenset[str] = frozenset({
     "🔴 Только вывезенные",
     "🌐 По всем компаниям",
     "🏢 По одной компании",
+    "📑 CSV для 1С — по всем",
+    "📑 CSV для 1С — по компании",
 })
 
 
@@ -139,8 +143,14 @@ def containers_type_select_reply_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def container_card_reply_kb(status: str) -> ReplyKeyboardMarkup:
-    """Клавиатура действий в карточке контейнера (зависит от статуса)."""
+def container_card_reply_kb(
+    status: str, with_history: bool = False
+) -> ReplyKeyboardMarkup:
+    """Клавиатура действий в карточке контейнера (зависит от статуса).
+
+    with_history=True добавляет кнопку «📜 История» перед «◀ К списку» —
+    только для роли full (аудит-лог содержит тарифные изменения).
+    """
     if status == "on_terminal":
         rows = [
             [KeyboardButton(text=BTN_DEPART)],
@@ -166,6 +176,8 @@ def container_card_reply_kb(status: str) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_DELETE)],
             [KeyboardButton(text=BTN_CARD_BACK_ACTIVE)],
         ]
+    if with_history:
+        rows.insert(len(rows) - 1, [KeyboardButton(text=BTN_HISTORY)])
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,

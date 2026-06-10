@@ -18,8 +18,10 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from db import audit as db_audit
 from db import companies as db_comp
 from db import containers as db_cont
+from handlers._card import send_container_card
 from services.normalizer import normalize_container_number
 from keyboards.containers import CONTAINER_TYPES
 from keyboards.main import main_menu
@@ -306,6 +308,74 @@ def _fmt_arrival_display(arrival: str | None) -> str:
     return arrival
 
 
+async def _save_container(data: dict) -> int | None:
+    """Сохраняет контейнер в БД. None — дубликат номера (race с INSERT)."""
+    return await db_cont.add_container(
+        number=data["number"],
+        display_number=data["display_number"],
+        company_id=data["company_id"],
+        status=data["status"],
+        # Тип не обязателен: «Пропустить» и сессии, пережившие смену
+        # порядка шагов, легитимно дают None («не указан»).
+        arrival_date=data.get("arrival_date"),
+        container_type=data.get("container_type"),
+    )
+
+
+async def _answer_registered(
+    message: Message, role: str, data: dict
+) -> None:
+    """Подтверждение регистрации с резюме введённых данных."""
+    reg_dt = datetime.now().strftime("%d.%m.%Y %H:%M")
+    container_type = data.get("container_type")
+    type_line = container_type if container_type else "не указан"
+
+    if data["status"] == "on_terminal":
+        arrival_line = (
+            f"📅 Дата прибытия: "
+            f"{_fmt_arrival_display(data.get('arrival_date'))}"
+        )
+    else:
+        arrival_line = (
+            "⏳ Контейнер ещё не прибыл. Billing начнётся после прибытия."
+        )
+
+    await message.answer(
+        f"✅ Контейнер <b>{data['display_number']}</b> зарегистрирован\n\n"
+        f"🏢 Компания: <b>{data['company_name']}</b>\n"
+        f"📦 Тип: {type_line}\n"
+        f"📅 Дата регистрации: {reg_dt}\n"
+        f"{arrival_line}",
+        reply_markup=main_menu(role),
+    )
+
+
+async def _notify_groups_registered(message: Message, data: dict) -> None:
+    """Live-лента: уведомление в группы о новом контейнере."""
+    if not (hasattr(message.bot, "_group_ids") and message.bot._group_ids):
+        return
+    # Поздний импорт сохранён намеренно: тесты патчат
+    # services.group_notify.notify_groups, привязка на момент вызова.
+    from services.group_notify import notify_groups
+
+    username = (
+        f"@{message.from_user.username}"
+        if message.from_user.username
+        else (message.from_user.full_name or "Unknown")
+    )
+    status_text = (
+        "На терминале" if data["status"] == "on_terminal" else "В пути"
+    )
+    notify_text = (
+        f"📥 <b>Новый контейнер</b>\n"
+        f"{data['display_number']} ({data['company_name']}) — "
+        f"{data.get('container_type') or 'тип не указан'}\n"
+        f"Статус: {status_text}\n"
+        f"Оператор: {username}"
+    )
+    await notify_groups(message.bot, message.bot._group_ids, notify_text)
+
+
 async def _finalize(
     message: Message,
     state: FSMContext,
@@ -337,83 +407,41 @@ async def _finalize(
         )
         return
 
-    number = data["number"]
-    display = data["display_number"]
-    company_id = data["company_id"]
-    company_name = data["company_name"]
-    status = data["status"]
-    arrival_date = data.get("arrival_date")
-    # Тип не в required: «Пропустить» и сессии, пережившие смену порядка
-    # шагов, легитимно дают None («не указан»).
-    container_type = data.get("container_type")
-
-    container_id = await db_cont.add_container(
-        number=number,
-        display_number=display,
-        company_id=company_id,
-        status=status,
-        arrival_date=arrival_date,
-        container_type=container_type,
-    )
+    container_id = await _save_container(data)
 
     if container_id is None:
         # Дубликат (race между pre-check и INSERT) — сообщаем юзеру и
         # открываем карточку уже существующего контейнера.
         await state.clear()
         await message.answer(
-            f"⚠️ Контейнер <b>{display}</b> уже зарегистрирован.",
+            f"⚠️ Контейнер <b>{data['display_number']}</b> "
+            "уже зарегистрирован.",
             reply_markup=main_menu(role),
         )
-        existing = await db_cont.find_by_number(number)
+        existing = await db_cont.find_by_number(data["number"])
         if existing:
-            from handlers.containers import _send_container_card
-            await _send_container_card(
+            await send_container_card(
                 message, existing, state, source="active", role=role
             )
         return
 
-    await state.clear()
-
-    reg_dt = datetime.now().strftime("%d.%m.%Y %H:%M")
-    type_line = container_type if container_type else "не указан"
-
-    if status == "on_terminal":
-        arrival_line = (
-            f"📅 Дата прибытия: {_fmt_arrival_display(arrival_date)}"
-        )
-        status_suffix = ""
-    else:
-        arrival_line = (
-            "⏳ Контейнер ещё не прибыл. Billing начнётся после прибытия."
-        )
-        status_suffix = ""
-
-    await message.answer(
-        f"✅ Контейнер <b>{display}</b> зарегистрирован\n\n"
-        f"🏢 Компания: <b>{company_name}</b>\n"
-        f"📦 Тип: {type_line}\n"
-        f"📅 Дата регистрации: {reg_dt}\n"
-        f"{arrival_line}"
-        f"{status_suffix}",
-        reply_markup=main_menu(role),
+    status_text = (
+        "на терминале" if data["status"] == "on_terminal" else "в пути"
     )
+    await db_audit.add_entry(
+        message.from_user, "регистрация", "container",
+        container_id, data["display_number"],
+        f"компания: {data['company_name']}, "
+        f"тип: {data.get('container_type') or '—'}, статус: {status_text}",
+    )
+
+    await state.clear()
+    await _answer_registered(message, role, data)
 
     container = await db_cont.get_container(container_id)
     if container:
-        from handlers.containers import _send_container_card
-        await _send_container_card(
+        await send_container_card(
             message, container, state, source="active", role=role
         )
 
-    # Live-лента: уведомление в группы
-    if hasattr(message.bot, "_group_ids") and message.bot._group_ids:
-        from services.group_notify import notify_groups
-        username = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or "Unknown")
-        status_text = "На терминале" if status == "on_terminal" else "В пути"
-        notify_text = (
-            f"📥 <b>Новый контейнер</b>\n"
-            f"{display} ({company_name}) — {container_type or 'тип не указан'}\n"
-            f"Статус: {status_text}\n"
-            f"Оператор: {username}"
-        )
-        await notify_groups(message.bot, message.bot._group_ids, notify_text)
+    await _notify_groups_registered(message, data)

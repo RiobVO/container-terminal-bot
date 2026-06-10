@@ -1,4 +1,5 @@
 import logging
+import os
 
 import aiosqlite
 
@@ -28,6 +29,12 @@ async def init_db(
     global _DB_PATH, _ADMIN_IDS
     _DB_PATH = path
     _ADMIN_IDS = admin_ids
+
+    # SQLite не создаёт родительские каталоги — без этого первый запуск
+    # вне Docker (где каталог создаёт bind-mount) падает
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
     await run_migrations(path)
 
