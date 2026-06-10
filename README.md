@@ -6,9 +6,11 @@
 Arrival, storage billing, xlsx reports, real-time audit — all in a chat.
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![aiogram 3.13](https://img.shields.io/badge/aiogram-3.13-2CA5E0.svg)](https://docs.aiogram.dev/)
+[![aiogram 3.28](https://img.shields.io/badge/aiogram-3.28-2CA5E0.svg)](https://docs.aiogram.dev/)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg)](https://docs.docker.com/compose/)
-[![Tests](https://img.shields.io/badge/tests-60%20passing-success.svg)](#-development)
+[![CI](https://github.com/RiobVO/container-terminal-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/RiobVO/container-terminal-bot/actions/workflows/tests.yml)
+[![Tests](https://img.shields.io/badge/tests-523%20passing-success.svg)](#-development)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-success.svg)](#-development)
 [![License](https://img.shields.io/badge/license-private-lightgrey.svg)](#)
 
 [![Live](https://img.shields.io/badge/live-%40Terminal__grand__bot-2CA5E0?logo=telegram)](https://t.me/Terminal_grand_bot)
@@ -214,6 +216,19 @@ CREATE TABLE users (
     is_protected    INTEGER NOT NULL DEFAULT 0, -- admin, role cannot be changed via UI
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE audit_log (                        -- append-only, never updated
+    id              INTEGER PRIMARY KEY,
+    created_at      TIMESTAMP,
+    actor_tg_id     INTEGER,
+    actor_name      TEXT,
+    action          TEXT NOT NULL,
+    entity_type     TEXT NOT NULL,              -- container | company | user | settings
+    entity_id       INTEGER,
+    entity_label    TEXT,                       -- human-readable id, survives entity deletion
+    details         TEXT
+);
+CREATE INDEX idx_audit_entity ON audit_log(entity_type, entity_id);
 ```
 
 ### Real-time audit
@@ -223,6 +238,20 @@ Every state change is pushed to `GROUP_IDS` (the terminal's ops channel):
 - `container.departed` — days on terminal, amount due, operator
 
 An evening summary at 20:00 posts the daily delta (`139 → 261, +122`).
+
+### Audit log
+
+Every mutating operation — container registration, status changes, edits, deletions,
+tariff and role changes — is written to an append-only `audit_log` table (`db/audit.py`).
+A write failure never breaks the business operation, it's logged and swallowed.
+The container card has a "📜 History" button (role `full`) showing the last 15 entries,
+so disputed invoices are settled from the DB, not from chat history.
+
+### 1C export
+
+The reports section offers a flat CSV next to xlsx, formatted for direct import into 1C
+(`services/csv_export.py`): `;` delimiter, `utf-8-sig` encoding, `DD.MM.YYYY` dates,
+decimal comma. Two scopes: all containers or a single company.
 
 ### Backups
 
@@ -251,7 +280,7 @@ Off-site storage is essentially free (Telegram handles it), no S3 bill, no addit
 > the first time you test it.
 
 - **No secrets in logs.** `BOT_TOKEN`, `BACKUP_CHAT_ID`, and admin IDs are read via `python-dotenv`,
-  never echoed; the logger formatter strips any token-shaped string.
+  never echoed; a `logging.Filter` (`services/log_masking.py`) masks the bot token in every log record.
 - **Chat filtering.** `ChatFilterMiddleware` drops every update that doesn't come from a DM
   or from an explicitly whitelisted group — mitigates abuse if someone adds the bot to a random chat.
 - **Role check on every handler.** `RoleMiddleware` injects `role` into handler `data` from the DB
@@ -299,7 +328,7 @@ middlewares/
 
 db/                 # aiosqlite: connection pool, migrations, queries
 keyboards/          # inline + reply keyboards
-tests/              # pytest + pytest-asyncio — 60 tests
+tests/              # pytest + pytest-asyncio — 523 tests
 ```
 
 ---
@@ -369,9 +398,13 @@ python bot.py
 ### Tests
 
 ```bash
-pytest -q                     # all 60 tests
+pytest -q                     # all 523 tests
 pytest -q tests/test_debt.py  # single module
 ```
+
+100% line coverage on `handlers/`, `services/`, `db/`, `keyboards/`, `middlewares/`
+(`bot.py` and legacy modules are excluded). CI enforces it on every push and PR
+via `.github/workflows/tests.yml` (`--cov-fail-under=100`).
 
 ### Operational notes
 
@@ -398,9 +431,6 @@ Shipping to production teaches things a greenfield design can't. If I were start
 - **Telegram as a backup channel** is clever and free — *until Telegram rate-limits
   uploads during an incident.* I'd add S3 / Backblaze B2 as a second destination.
   Off-site via two independent channels is cheap insurance.
-- **No admin audit log.** When an admin changes a tariff, only the channel post proves it.
-  I'd add an append-only `audit_log` table from day one and stop relying on chat history
-  as authoritative storage.
 - **aiogram DI via `data` is convenient but invisible.** Testing a handler requires
   remembering what middleware injected. Next time I'd use an explicit container
   (e.g. `dishka`) or pass services as plain arguments.
@@ -409,12 +439,10 @@ Shipping to production teaches things a greenfield design can't. If I were start
 
 ## 🗺️ Roadmap
 
-- **PostgreSQL + asyncpg** once a terminal has 10+ concurrent operators (current max: 3).
+- **PostgreSQL + asyncpg** — deferred (decision 2026-06-10): consciously postponed until a second client appears; SQLite covers current load (max 3 concurrent operators).
 - **Web admin panel** (React) on top of the same service layer, for managers who prefer a browser.
-- **1C export** — CSV with the accounting schema they use; existing open issue.
-- **Multi-tenant** — one bot instance serving multiple terminals (today it's one-to-one).
+- **Multi-tenant** — deferred (decision 2026-06-10): one bot instance serving multiple terminals, consciously postponed until a second client appears.
 - **Dual backup destinations** — Telegram + S3/B2 for incident-time resilience.
-- **Append-only audit log** — every admin action in a dedicated table, no reliance on chat history.
 
 ---
 
