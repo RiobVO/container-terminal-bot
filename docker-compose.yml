@@ -3,6 +3,8 @@ services:
     build: .
     container_name: container-bot
     restart: always
+    # Droplet 1GB: бот ограничен 384M, чтобы ОС и Redis всегда имели запас.
+    mem_limit: 384m
     env_file: .env
     depends_on:
       - redis
@@ -13,6 +15,12 @@ services:
       # Bind-mount: БД лежит в ./data на хосте — легко бэкапить и переносить.
       # Владелец файлов должен быть UID 1000 (appuser из Dockerfile).
       - ./data:/app/data
+    healthcheck:
+      # Бот обновляет /app/data/heartbeat каждые 60с; файл старше 180с = бот завис.
+      test: ["CMD", "python", "-c", "import os,sys,time; p='/app/data/heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<180 else 1)"]
+      interval: 60s
+      start_period: 30s
+      retries: 3
     logging:
       driver: json-file
       options:
@@ -23,9 +31,15 @@ services:
     image: redis:7-alpine
     container_name: container-redis
     restart: always
+    mem_limit: 128m
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 60s
+      start_period: 30s
+      retries: 3
     logging:
       driver: json-file
       options:
