@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aiogram.types import Message, Chat
+from aiogram.types import CallbackQuery, Message, Chat
 
 from middlewares.chat_filter import ChatFilterMiddleware
 
@@ -65,3 +65,41 @@ async def test_authorized_channel_allowed(middleware):
     event = _make_message("channel", chat_id=-100123)
     await middleware(handler, event, {})
     handler.assert_called_once()
+
+
+def _make_callback(chat_type: str | None, chat_id: int = 0) -> MagicMock:
+    """CallbackQuery; chat_type=None — callback без message."""
+    cq = MagicMock(spec=CallbackQuery)
+    if chat_type is None:
+        cq.message = None
+        return cq
+    chat = MagicMock()
+    chat.type = chat_type
+    chat.id = chat_id
+    cq.message = MagicMock()
+    cq.message.chat = chat
+    return cq
+
+
+async def test_callback_chat_taken_from_message(middleware):
+    """Для CallbackQuery чат берётся из event.message."""
+    handler = AsyncMock()
+    event = _make_callback("supergroup", chat_id=-100123)
+    await middleware(handler, event, {})
+    handler.assert_called_once()
+
+
+async def test_callback_without_message_blocked(middleware):
+    """CallbackQuery без message — чат не определить, блокируем."""
+    handler = AsyncMock()
+    result = await middleware(handler, _make_callback(None), {})
+    assert result is None
+    handler.assert_not_called()
+
+
+async def test_unknown_event_type_blocked(middleware):
+    """Событие не Message и не CallbackQuery — блокируется."""
+    handler = AsyncMock()
+    result = await middleware(handler, MagicMock(), {})
+    assert result is None
+    handler.assert_not_called()
