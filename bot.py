@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -10,6 +10,7 @@ from aiogram.types import BotCommand
 from config import load_config
 from db import init_db
 from handlers import setup_routers
+from middlewares.chat_filter import ChatFilterMiddleware
 from middlewares.role import RoleMiddleware
 
 logging.basicConfig(
@@ -37,8 +38,9 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.message.filter(F.chat.type == "private")
-    dp.callback_query.filter(F.message.chat.type == "private")
+    chat_filter = ChatFilterMiddleware(cfg.group_ids)
+    dp.message.middleware(chat_filter)
+    dp.callback_query.middleware(chat_filter)
 
     dp.message.middleware(RoleMiddleware())
     dp.callback_query.middleware(RoleMiddleware())
