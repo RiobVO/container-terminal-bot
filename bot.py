@@ -10,6 +10,7 @@ from aiogram.types import BotCommand
 from config import load_config
 from db import init_db
 from handlers import setup_routers
+from services.scheduler import init_scheduler
 from middlewares.chat_filter import ChatFilterMiddleware
 from middlewares.role import RoleMiddleware
 
@@ -36,6 +37,7 @@ async def main() -> None:
         token=cfg.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot._group_ids = cfg.group_ids
     dp = Dispatcher(storage=MemoryStorage())
 
     chat_filter = ChatFilterMiddleware(cfg.group_ids)
@@ -46,6 +48,21 @@ async def main() -> None:
     dp.callback_query.middleware(RoleMiddleware())
 
     setup_routers(dp)
+
+    # Планировщик отчётов (только если есть группы)
+    if cfg.group_ids:
+        scheduler = init_scheduler(
+            bot=bot,
+            group_ids=cfg.group_ids,
+            report_hour=cfg.report_hour,
+            evening_hour=cfg.evening_report_hour,
+            timezone=cfg.timezone,
+        )
+        scheduler.start()
+        logger.info(
+            "Планировщик запущен: утренний=%02d:00, вечерний=%02d:00, tz=%s",
+            cfg.report_hour, cfg.evening_report_hour, cfg.timezone,
+        )
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Запуск бота"),
