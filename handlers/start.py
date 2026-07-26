@@ -87,7 +87,7 @@ async def cmd_cancel(
 
 @router.message(Command("report"))
 async def cmd_report(message: Message, role: str) -> None:
-    """Принудительная отправка утреннего отчёта в канал/группы."""
+    """Меню выбора отчёта для отправки в канал."""
     if role != "full":
         await message.answer(_NO_ACCESS)
         return
@@ -97,13 +97,13 @@ async def cmd_report(message: Message, role: str) -> None:
         await message.answer("⚠️ GROUP_IDS не настроены в .env")
         return
 
-    from services.daily_report import build_morning_report
-    from services.scheduler import _morning_keyboard
-    from services.group_notify import notify_groups
-
-    text = await build_morning_report()
-    await notify_groups(message.bot, group_ids, text, reply_markup=_morning_keyboard())
-    await message.answer("✅ Отчёт отправлен")
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Утренний отчёт", callback_data="cmd_report:morning")],
+        [InlineKeyboardButton(text="📋 Итоги дня", callback_data="cmd_report:evening")],
+        [InlineKeyboardButton(text="📥 Скачать xlsx", callback_data="cmd_report:xlsx")],
+    ])
+    await message.answer("Какой отчёт отправить в канал?", reply_markup=kb)
 
 
 # ---------------------------------------------------------------------------
