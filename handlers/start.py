@@ -85,6 +85,27 @@ async def cmd_cancel(
     )
 
 
+@router.message(Command("report"))
+async def cmd_report(message: Message, role: str) -> None:
+    """Принудительная отправка утреннего отчёта в канал/группы."""
+    if role != "full":
+        await message.answer(_NO_ACCESS)
+        return
+
+    group_ids = getattr(message.bot, "_group_ids", frozenset())
+    if not group_ids:
+        await message.answer("⚠️ GROUP_IDS не настроены в .env")
+        return
+
+    from services.daily_report import build_morning_report
+    from services.scheduler import _morning_keyboard
+    from services.group_notify import notify_groups
+
+    text = await build_morning_report()
+    await notify_groups(message.bot, group_ids, text, reply_markup=_morning_keyboard())
+    await message.answer("✅ Отчёт отправлен")
+
+
 # ---------------------------------------------------------------------------
 # Fallback-роутер (подключается последним в __init__.py)
 # ---------------------------------------------------------------------------
