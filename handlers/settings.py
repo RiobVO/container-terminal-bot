@@ -22,6 +22,7 @@ from keyboards.settings import (
     BTN_DEF_STORAGE_RATE,
     BTN_ROLE_FULL,
     BTN_ROLE_NONE,
+    BTN_ROLE_OPERATOR,
     BTN_ROLE_REPORTS,
     BTN_SET_DEFAULTS,
     BTN_SET_USERS,
@@ -164,6 +165,7 @@ async def users_pick(message: Message, state: FSMContext) -> None:
 
 _ROLE_BY_BTN = {
     BTN_ROLE_FULL: "full",
+    BTN_ROLE_OPERATOR: "operator",
     BTN_ROLE_REPORTS: "reports_only",
     BTN_ROLE_NONE: "none",
 }
