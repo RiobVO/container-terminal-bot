@@ -126,7 +126,8 @@ async def fallback_back(message: Message, state: FSMContext, role: str) -> None:
 @fallback_router.callback_query()
 async def stale_callback(callback: CallbackQuery) -> None:
     """Устаревший callback."""
-    logger.info("Устаревший callback: user=%s data=%s", callback.from_user.id, callback.data)
+    user_id = callback.from_user.id if callback.from_user else "channel"
+    logger.info("Устаревший callback: user=%s data=%s", user_id, callback.data)
     await callback.answer("Кнопка устарела. Нажми /start.", show_alert=False)
 
 
