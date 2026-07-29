@@ -64,26 +64,28 @@ async def main() -> None:
 
     setup_routers(dp)
 
-    # Планировщик отчётов (только если есть группы)
-    if cfg.group_ids:
-        try:
-            scheduler = init_scheduler(
-                bot=bot,
-                group_ids=cfg.group_ids,
-                report_hour=cfg.report_hour,
-                evening_hour=cfg.evening_report_hour,
-                timezone=cfg.timezone,
-            )
-            scheduler.start()
-            logger.info(
-                "Планировщик запущен: утренний=%02d:00, вечерний=%02d:00, tz=%s",
-                cfg.report_hour, cfg.evening_report_hour, cfg.timezone,
-            )
-        except Exception:
-            logger.exception(
-                "Не удалось запустить планировщик (проверь TIMEZONE=%s)",
-                cfg.timezone,
-            )
+    # Планировщик: отчёты + бэкапы
+    try:
+        scheduler = init_scheduler(
+            bot=bot,
+            group_ids=cfg.group_ids,
+            report_hour=cfg.report_hour,
+            evening_hour=cfg.evening_report_hour,
+            timezone=cfg.timezone,
+            admin_ids=cfg.admin_ids,
+            db_path=cfg.db_path,
+        )
+        scheduler.start()
+        logger.info(
+            "Планировщик запущен: утренний=%02d:00, вечерний=%02d:00, "
+            "бэкап=каждые 6ч, tz=%s",
+            cfg.report_hour, cfg.evening_report_hour, cfg.timezone,
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось запустить планировщик (проверь TIMEZONE=%s)",
+            cfg.timezone,
+        )
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Запуск бота"),
