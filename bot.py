@@ -72,7 +72,7 @@ async def main() -> None:
             report_hour=cfg.report_hour,
             evening_hour=cfg.evening_report_hour,
             timezone=cfg.timezone,
-            admin_ids=cfg.admin_ids,
+            backup_chat_id=cfg.backup_chat_id,
             db_path=cfg.db_path,
         )
         scheduler.start()

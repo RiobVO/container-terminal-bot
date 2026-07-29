@@ -67,8 +67,8 @@ async def _send_evening_report(bot: Bot, group_ids: frozenset[int]) -> None:
     await notify_groups(bot, group_ids, text)
 
 
-async def _backup_db(bot: Bot, admin_ids: frozenset[int], db_path: str) -> None:
-    """Копирует БД и отправляет админам в Telegram."""
+async def _backup_db(bot: Bot, backup_chat_id: int, db_path: str) -> None:
+    """Копирует БД и отправляет в канал бэкапов."""
     src = Path(db_path)
     if not src.exists():
         logger.warning("БД не найдена для бэкапа: %s", db_path)
@@ -83,11 +83,10 @@ async def _backup_db(bot: Bot, admin_ids: frozenset[int], db_path: str) -> None:
     shutil.copy2(src, backup_path)
     logger.info("Локальный бэкап: %s", backup_path)
 
-    # Ротация: удаляем бэкапы старше 7 дней
+    # Ротация: удаляем локальные бэкапы старше 7 дней
     for old in sorted(backup_dir.glob(f"{src.stem}_*{src.suffix}")):
         if old == backup_path:
             continue
-        # Парсим дату из имени файла
         try:
             name_part = old.stem.replace(f"{src.stem}_", "")
             file_dt = datetime.strptime(name_part, "%Y-%m-%d_%H-%M")
@@ -97,18 +96,16 @@ async def _backup_db(bot: Bot, admin_ids: frozenset[int], db_path: str) -> None:
         except (ValueError, OSError):
             continue
 
-    # Отправляем в Telegram админам
-    for admin_id in admin_ids:
-        try:
-            await bot.send_document(
-                chat_id=admin_id,
-                document=FSInputFile(backup_path, filename=backup_name),
-                caption=f"💾 Бэкап БД — {ts}",
-            )
-        except Exception:
-            logger.warning("Не удалось отправить бэкап админу %s", admin_id)
-
-    logger.info("Бэкап отправлен %d админам", len(admin_ids))
+    # Отправляем в канал бэкапов
+    try:
+        await bot.send_document(
+            chat_id=backup_chat_id,
+            document=FSInputFile(backup_path, filename=backup_name),
+            caption=f"💾 Бэкап БД — {ts}",
+        )
+        logger.info("Бэкап отправлен в канал %s", backup_chat_id)
+    except Exception:
+        logger.warning("Не удалось отправить бэкап в канал %s", backup_chat_id, exc_info=True)
 
 
 def init_scheduler(
@@ -117,7 +114,7 @@ def init_scheduler(
     report_hour: int,
     evening_hour: int,
     timezone: str,
-    admin_ids: frozenset[int] = frozenset(),
+    backup_chat_id: int | None = None,
     db_path: str = "",
 ) -> AsyncIOScheduler:
     """Создаёт и возвращает настроенный планировщик."""
@@ -140,11 +137,11 @@ def init_scheduler(
     )
 
     # Бэкап БД каждые 6 часов (03:00, 09:00, 15:00, 21:00)
-    if admin_ids and db_path:
+    if backup_chat_id and db_path:
         scheduler.add_job(
             _backup_db,
             CronTrigger(hour="3,9,15,21", minute=0),
-            args=[bot, admin_ids, db_path],
+            args=[bot, backup_chat_id, db_path],
             id="db_backup",
             name="Бэкап БД",
         )
