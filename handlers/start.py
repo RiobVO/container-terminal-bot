@@ -106,6 +106,24 @@ async def cmd_report(message: Message, role: str) -> None:
     await message.answer("Какой отчёт отправить в канал?", reply_markup=kb)
 
 
+@router.message(Command("backup"))
+async def cmd_backup(message: Message, role: str) -> None:
+    """Принудительный бэкап БД в канал бэкапов."""
+    if role != "full":
+        await message.answer(_NO_ACCESS)
+        return
+
+    from services.scheduler import _backup_db
+    backup_chat_id = _cfg.backup_chat_id if hasattr(_cfg, "backup_chat_id") else None
+    if not backup_chat_id:
+        await message.answer("⚠️ BACKUP_CHAT_ID не настроен в .env")
+        return
+
+    db_path = _cfg.db_path if hasattr(_cfg, "db_path") else ""
+    await _backup_db(message.bot, backup_chat_id, db_path)
+    await message.answer("✅ Бэкап отправлен в канал")
+
+
 # ---------------------------------------------------------------------------
 # Fallback-роутер (подключается последним в __init__.py)
 # ---------------------------------------------------------------------------
