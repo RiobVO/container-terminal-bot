@@ -114,13 +114,10 @@ async def cmd_backup(message: Message, role: str) -> None:
         return
 
     from services.scheduler import _backup_db
-    backup_chat_id = _cfg.backup_chat_id if hasattr(_cfg, "backup_chat_id") else None
-    if not backup_chat_id:
+    if not _cfg.backup_chat_id:
         await message.answer("⚠️ BACKUP_CHAT_ID не настроен в .env")
         return
-
-    db_path = _cfg.db_path if hasattr(_cfg, "db_path") else ""
-    await _backup_db(message.bot, backup_chat_id, db_path)
+    await _backup_db(message.bot, _cfg.backup_chat_id, _cfg.db_path)
     await message.answer("✅ Бэкап отправлен в канал")
 
 
