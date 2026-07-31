@@ -156,11 +156,14 @@ async def build_evening_report() -> str:
     current_debt = 0.0
 
     for c in all_containers:
-        reg = c["registered_at"]
-        if reg:
+        # Считаем по фактической дате прибытия, а не по registered_at:
+        # контейнер могли зарегистрировать заранее (in_transit), прибыл позже —
+        # в вечернем отчёте важен факт прибытия сегодня, а не момент ввода в БД.
+        arr = c["arrival_date"]
+        if arr:
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
                 try:
-                    if datetime.strptime(reg, fmt).date() == today:
+                    if datetime.strptime(arr, fmt).date() == today:
                         arrived_today += 1
                     break
                 except ValueError:
