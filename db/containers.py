@@ -114,31 +114,41 @@ async def add_container(
     status: str,
     arrival_date: str | None,
     container_type: str | None = None,
-) -> int:
-    """Добавляет контейнер. Возвращает id."""
+) -> int | None:
+    """Добавляет контейнер. Возвращает id или None при дубликате номера.
+
+    На номер навешан UNIQUE — гонка между pre-check в хэндлере и INSERT
+    здесь теоретически возможна (один процесс aiogram = крайне маловероятно,
+    но страхуемся). При IntegrityError возвращаем None, вызывающий код
+    должен показать пользователю внятное сообщение вместо общего «ошибка».
+    """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    async with get_db() as conn:
-        cursor = await conn.execute(
-            "INSERT INTO containers "
-            "(number, display_number, company_id, status, type, "
-            "registered_at, arrival_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                number,
-                display_number,
-                company_id,
-                status,
-                container_type,
-                now,
-                arrival_date,
-            ),
-        )
-        await conn.commit()
-        logger.info(
-            "Контейнер добавлен: %s status=%s company_id=%s type=%s",
-            number, status, company_id, container_type,
-        )
-        return cursor.lastrowid
+    try:
+        async with get_db() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO containers "
+                "(number, display_number, company_id, status, type, "
+                "registered_at, arrival_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    number,
+                    display_number,
+                    company_id,
+                    status,
+                    container_type,
+                    now,
+                    arrival_date,
+                ),
+            )
+            await conn.commit()
+            logger.info(
+                "Контейнер добавлен: %s status=%s company_id=%s type=%s",
+                number, status, company_id, container_type,
+            )
+            return cursor.lastrowid
+    except aiosqlite.IntegrityError:
+        logger.warning("Дубликат номера при добавлении: %s", number)
+        return None
 
 
 async def set_arrived(container_id: int) -> None:

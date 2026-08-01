@@ -1,6 +1,9 @@
 """Формирование текстов утреннего и вечернего отчётов."""
+import json
 import logging
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from db import containers as db_cont
 from db.settings import get_all_settings
@@ -8,8 +11,42 @@ from services.calculator import calculate_container_cost
 
 logger = logging.getLogger(__name__)
 
-# Снимок утреннего состояния для сравнения в вечернем отчёте
-_morning_snapshot: dict | None = None
+
+# Персистент утреннего снимка: нужен чтобы вечерний отчёт показывал diff
+# «было утром → стало вечером» даже после перезапуска бота между 06:00
+# и 20:00. Файл кладём рядом с БД (в bind-mount data/), чтобы переживал
+# пересборку контейнера.
+def _snapshot_path() -> Path:
+    db_path = os.getenv("DATABASE_PATH") or os.getenv("DB_PATH", "bot.db")
+    return Path(db_path).parent / "morning_snapshot.json"
+
+
+def _save_morning_snapshot(snapshot: dict) -> None:
+    try:
+        payload = {
+            "on_terminal": snapshot["on_terminal"],
+            "total_debt": snapshot["total_debt"],
+            "timestamp": snapshot["timestamp"].isoformat(),
+        }
+        _snapshot_path().write_text(json.dumps(payload), encoding="utf-8")
+    except Exception:
+        logger.warning("Не удалось сохранить утренний снимок", exc_info=True)
+
+
+def _load_morning_snapshot() -> dict | None:
+    path = _snapshot_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {
+            "on_terminal": data["on_terminal"],
+            "total_debt": data["total_debt"],
+            "timestamp": datetime.fromisoformat(data["timestamp"]),
+        }
+    except Exception:
+        logger.warning("Не удалось прочитать утренний снимок", exc_info=True)
+        return None
 
 
 def _format_money(value: float) -> str:
@@ -41,8 +78,6 @@ def _classify_warning(
 
 async def build_morning_report() -> str:
     """Формирует текст утреннего отчёта со сводкой и предупреждениями."""
-    global _morning_snapshot
-
     settings = await get_all_settings()
     counts = await db_cont.count_by_status()
     all_containers = await db_cont.all_containers()
@@ -88,11 +123,11 @@ async def build_morning_report() -> str:
                 f"├ {display} ({company}) — через {days_left} дн."
             )
 
-    _morning_snapshot = {
+    _save_morning_snapshot({
         "on_terminal": counts.get("on_terminal", 0),
         "total_debt": round(total_debt, 2),
         "timestamp": datetime.now(),
-    }
+    })
 
     departed_yesterday = 0
     yesterday = (datetime.now() - timedelta(days=1)).date()
@@ -206,9 +241,9 @@ async def build_evening_report() -> str:
         f"Вывезено: -{departed_today} контейнеров",
     ]
 
-    global _morning_snapshot
-    if _morning_snapshot and _morning_snapshot["timestamp"].date() == today:
-        prev_count = _morning_snapshot["on_terminal"]
+    morning = _load_morning_snapshot()
+    if morning and morning["timestamp"].date() == today:
+        prev_count = morning["on_terminal"]
         count_diff = current_on_terminal - prev_count
         count_sign = "+" if count_diff >= 0 else ""
 
