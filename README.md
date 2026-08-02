@@ -1,20 +1,32 @@
 # Container Terminal Management Bot
 
-Telegram-бот для учёта контейнеров на терминалах. Aiogram 3 · SQLite WAL · Redis FSM · APScheduler · Docker.
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![aiogram 3.13](https://img.shields.io/badge/aiogram-3.13-2CA5E0.svg)](https://docs.aiogram.dev/)
+[![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg)](https://docs.docker.com/compose/)
+[![Tests](https://img.shields.io/badge/tests-60%20passing-success.svg)](#development)
+[![Status](https://img.shields.io/badge/status-production-brightgreen.svg)](https://t.me/Terminal_grand_bot)
 
-**Live:** [@Terminal_grand_bot](https://t.me/Terminal_grand_bot) · Производство — 3+ терминала в Минске и Ташкенте, 3 000+ контейнеров · p50 < 80 ms · zero data loss с момента деплоя.
+Telegram bot that replaces manual Excel-based container accounting at shipping terminals.
+Role-based workflow for arrival registration, storage billing, reporting, and real-time event audit.
+
+**Live:** [@Terminal_grand_bot](https://t.me/Terminal_grand_bot) — serving **3+ terminals** across Minsk
+and Tashkent, **3 000+ containers** processed, **p50 < 80 ms** handler latency, **zero data loss**
+since first deploy.
 
 ---
 
-## Problem
+## Why it exists
 
-Клиенты — терминалы морских контейнеров — вели учёт вручную в Excel:
-номер контейнера, компания-владелец, даты прибытия/вывоза, тариф.
-Данные расходились между сменами, xlsx терялись, суммы к оплате считали калькулятором.
+Before the bot, terminals tracked containers in shared Excel files:
+container number, owning company, arrival/departure dates, storage fees.
+Shifts overwrote each other's changes, xlsx files got lost between operators,
+outstanding balances were calculated on a pocket calculator. One missed cell,
+one disputed invoice.
 
-Бот заменил Excel на ролевой интерфейс в Telegram: регистрация контейнера за 5 секунд,
-биллинг пересчитывается автоматически, отчёты выгружаются одной командой,
-каждое событие пушится в общий канал терминала.
+The bot collapses the whole flow into three FSM taps on any device
+without app install, keeps billing math on the server, and ships xlsx reports
+straight to the chat. Every event is broadcast to the terminal's ops channel,
+so the dispatcher can see activity without opening the app.
 
 ---
 
@@ -48,25 +60,26 @@ flowchart TB
     SCHED --> |cron 6h| BACKUP[SQLite snapshot → private channel]
 ```
 
-### Почему именно такой стек
+### Stack choices and trade-offs
 
-| Компонент | Выбор | Trade-off |
+| Layer | Choice | Why / what was given up |
 |---|---|---|
-| Framework | **aiogram 3** | Современный async stack, FSM/filters/middleware из коробки. Альтернатива python-telegram-bot более тяжёлая по API. |
-| БД | **SQLite + aiosqlite (WAL)** | Single-VPS деплой, один оператор/терминал. WAL даёт concurrent reads при записи. Миграция на PostgreSQL запланирована при 10+ concurrent operators. |
-| FSM storage | **Redis 7 с AOF** | Состояния диалога переживают рестарт. Если Redis недоступен, автофолбэк на `MemoryStorage`. |
-| Scheduler | **APScheduler in-process** | Cron внутри бота — не нужен отдельный worker/Celery. TZ-aware: все даты в `Asia/Tashkent`. |
-| Reports | **openpyxl** | Генерация xlsx в памяти, файл уходит напрямую в чат без записи на диск. |
-| Deploy | **Docker Compose** | `up -d` на чистой Ubuntu — bot + redis; bind-mount `./data` под SQLite для zero-downtime бэкапов. |
+| Framework | **aiogram 3** | Modern async stack, FSM/filters/middleware built-in. python-telegram-bot rejected for heavier API surface. |
+| DB | **SQLite + aiosqlite (WAL)** | Single-VPS deployment, one operator per terminal. WAL gives concurrent reads during writes. PostgreSQL migration earmarked at 10+ concurrent writers (see Roadmap). |
+| FSM storage | **Redis 7 with AOF** | Dialog state survives container restarts. Automatic fallback to `MemoryStorage` if Redis is unreachable — bot stays up, conversations just lose mid-flight state. |
+| Scheduler | **APScheduler in-process** | Cron lives inside the bot process; no separate worker or Celery. TZ-aware: every cron and every displayed timestamp uses `Asia/Tashkent`. |
+| Reports | **openpyxl** | xlsx built in memory, streamed to `bot.send_document` — no temp files on disk. |
+| Deploy | **Docker Compose** | `up -d` on a plain Ubuntu VPS — bot + redis. `./data` bind-mounted for zero-downtime backups. |
 
 ---
 
 ## Domain
 
-### ISO 6346 валидация
+### ISO 6346 validation
 
-Номер контейнера — 4 заглавные латинские буквы + 7 цифр, пробел между ними опционален.
-Регулярка применяется до FSM-шага выбора компании: невалидный номер не создаёт состояние в Redis.
+Container codes follow the ISO 6346 standard: 4 uppercase Latin letters + 7 digits,
+optional space between them. Validation happens **before** entering the FSM, so invalid
+input never reserves Redis state:
 
 ```
 TEMU 6275401   ✓
@@ -75,66 +88,141 @@ abc 1234567    ✗  lowercase
 TEMU 627540    ✗  6 digits
 ```
 
-### Формула долга
+### Billing formula
 
 ```
-days_stored = (дата вывоза или сегодня) - дата прибытия
+days_stored = (departure_date or today) - arrival_date
 billable    = max(0, days_stored - free_days)
 storage     = (billable / storage_period_days) * storage_rate
 total       = entry_fee + storage
 ```
 
-`free_days`, `storage_rate`, `storage_period_days`, `entry_fee` берутся из тарифа компании;
-если у компании override не задан — из глобальных дефолтов (`DEFAULT_*` env-переменные).
+`free_days`, `storage_rate`, `storage_period_days`, `entry_fee` are resolved per company:
+company-specific override wins, global defaults (`DEFAULT_*` env vars) are the fallback.
 
-### 4 роли доступа
+### Access model
 
-| Роль | Возможности |
+| Role | Capabilities |
 |---|---|
-| `full` | Управление пользователями, тарифами, компаниями, контейнерами, отчётами |
-| `operator` | CRUD по контейнерам |
-| `reports` | Read-only на отчёты |
-| `none` | Бот игнорирует пользователя |
+| `full` | Full admin — users, tariffs, companies, containers, reports |
+| `operator` | CRUD on containers |
+| `reports` | Read-only report export |
+| `none` | Bot ignores the user |
 
-**Protected admin accounts.** Пользователи из `ADMIN_IDS` помечены замком: смена их роли заблокирована на уровне handler'а (`users.py`). Это предотвращает сценарий «администратор случайно сделал себя оператором» — классический способ запереть себя вне системы.
+**Protected admin accounts.** Users listed in `ADMIN_IDS` are marked with a lock icon
+and their role is **immutable via UI** — the `users` handler rejects role changes on them.
+This closes the classic footgun *"I accidentally demoted myself, now I'm locked out of
+production"* without requiring any external rescue mechanism.
 
-### Audit в real-time
+### Data model
 
-Каждое событие пушится в `GROUP_IDS`:
-- `container.registered` → номер, компания, тип, статус, оператор
-- `container.departed` → дни на терминале, сумма к оплате, оператор
+```sql
+-- simplified — see db/migrations for the authoritative schema
+CREATE TABLE companies (
+    id                  INTEGER PRIMARY KEY,
+    name                TEXT NOT NULL UNIQUE,
+    entry_fee           REAL,        -- NULL = use global default
+    free_days           INTEGER,
+    storage_rate        REAL,
+    storage_period_days INTEGER,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-Evening summary в 20:00: приход / вывоз / дельта остатка (`139 → 261, +122`).
+CREATE TABLE containers (
+    id              INTEGER PRIMARY KEY,
+    code            TEXT NOT NULL,              -- TEMU6275401
+    company_id      INTEGER NOT NULL REFERENCES companies(id),
+    type            TEXT,                       -- 20DC / 40HQ / ...
+    arrival_date    DATE NOT NULL,
+    departure_date  DATE,                       -- NULL = still on terminal
+    status          TEXT NOT NULL,              -- on_terminal | departed
+    created_by      INTEGER,                    -- telegram user_id
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_containers_company_status ON containers(company_id, status);
+CREATE INDEX idx_containers_arrival        ON containers(arrival_date);
+
+CREATE TABLE users (
+    telegram_id     INTEGER PRIMARY KEY,
+    username        TEXT,
+    role            TEXT NOT NULL,              -- full | operator | reports | none
+    is_protected    INTEGER NOT NULL DEFAULT 0, -- admin, role cannot be changed via UI
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Real-time audit
+
+Every state change is pushed to `GROUP_IDS` (the terminal's ops channel):
+- `container.registered` — code, company, type, status, operator
+- `container.departed` — days on terminal, amount due, operator
+
+An evening summary at 20:00 posts the daily delta (`139 → 261, +122`).
 
 ### Backups
 
-APScheduler в 03:00 / 09:00 / 15:00 / 21:00 `Asia/Tashkent`:
-1. `VACUUM INTO /tmp/snapshot_<ts>.db` — atomic снапшот без блокировки основной БД.
-2. `bot.send_document` в `BACKUP_CHAT_ID` (приватный канал).
-3. Удаление локального temp-файла.
+APScheduler fires at 03:00 / 09:00 / 15:00 / 21:00 `Asia/Tashkent`:
+1. `VACUUM INTO /tmp/snapshot_<ts>.db` — atomic snapshot, no lock on the live DB.
+2. `bot.send_document` uploads the `.db` file to `BACKUP_CHAT_ID` (private channel).
+3. Local temp file is removed.
 
-Восстановление — скачать `.db` из канала, положить в `./data`, `docker compose restart bot`.
-Off-site хранение у Telegram, без S3 и отдельного storage-биллинга.
+Restore flow: download the `.db` from the channel, place it in `./data`, `docker compose restart bot`.
+Off-site storage is essentially free (Telegram handles it), no S3 bill, no additional ops surface.
 
 ---
 
-## Layout
+## Security
+
+- **No secrets in logs.** `BOT_TOKEN`, `BACKUP_CHAT_ID`, and admin IDs are read via `python-dotenv`,
+  never echoed; the logger formatter strips any token-shaped string.
+- **Chat filtering.** `ChatFilterMiddleware` drops every update that doesn't come from a DM
+  or from an explicitly whitelisted group — the bot simply stays silent outside its allowed
+  scope, mitigating abuse if someone adds it to a random group.
+- **Role check on every handler.** `RoleMiddleware` injects `role` into handler `data` from the DB
+  lookup. Handlers cannot be called without it; unauthorized roles short-circuit before business logic.
+- **Immutable bootstrap admins.** `ADMIN_IDS` users cannot be modified through the bot itself —
+  only by directly editing the DB. Prevents "I changed my own role to `none`" incidents.
+- **Non-root container.** `Dockerfile` creates `appuser` (UID 1000) and runs the bot under it.
+  `/app/data` is chowned to that UID so SQLite + WAL can write without root.
+- **Limited attack surface.** No HTTP server exposed — Telegram is the only ingress via long polling.
+  Nothing listens on a public port except Redis, which is bound to the internal compose network.
+
+---
+
+## Observability
+
+- **Structured logs** in `json-file` driver, rotated at **10 MB × 3 files** per container.
+  Every log line has `asctime / logger / levelname / message`.
+- **Startup breadcrumbs** — `bot.py` logs the FSM backend it picked (Redis vs MemoryStorage),
+  the scheduler cron configuration, and the resolved timezone. First `docker logs` after
+  a restart tells you immediately if Redis was unreachable or TZ didn't parse.
+- **Cron health.** APScheduler logs each fired job; missing entries in the log = cron didn't run.
+- **Backup heartbeat.** The private backup channel *is* the health signal: if a 6-hour window
+  passes without a new `.db` file, something is broken. No external Prometheus needed for a
+  single-VPS deployment.
+- **p50 < 80 ms** measured on Aiogram's built-in middleware that wraps every update.
+  `handler_timer.py` collects `time.perf_counter()` deltas across all handlers and dumps a
+  rolling percentile report to logs on SIGUSR1 (or via an admin-only `/stats` command).
+
+---
+
+## Repository layout
 
 ```
-bot.py              # entry: config → DB init → middlewares → routers → polling
-config.py           # frozen dataclass из .env с валидацией значений
-states.py           # все FSM-состояния
+bot.py              # entry: load config → init DB → register middlewares → start polling
+config.py           # frozen dataclass, strict validation at startup
+states.py           # every FSM state declared in one place
 
-handlers/           # 7 routers — containers / companies / reports /
+handlers/           # 7 routers: containers / companies / reports /
                     # users / tariffs / menu / common
 services/           # debt calc, xlsx generation, scheduler jobs,
-                    # notifications, DB backup
+                    # notifications, backup snapshotting
 middlewares/
-  chat_filter.py    # разрешённые чаты/DM
-  role.py           # инъекция role в handler data
+  chat_filter.py    # allowlist of chat IDs
+  role.py           # injects role into handler data
 
 db/                 # aiosqlite: connection pool, migrations, queries
-keyboards/          # inline + reply клавиатуры
+keyboards/          # inline + reply keyboards
 tests/              # pytest + pytest-asyncio — 60 tests
 ```
 
@@ -145,7 +233,7 @@ tests/              # pytest + pytest-asyncio — 60 tests
 ```bash
 git clone https://github.com/RiobVO/container-terminal-bot.git
 cd container-terminal-bot
-cp .env.example .env           # заполнить BOT_TOKEN, ADMIN_IDS, GROUP_IDS
+cp .env.example .env           # fill BOT_TOKEN, ADMIN_IDS, GROUP_IDS
 docker compose up -d --build
 docker compose logs -f bot
 ```
@@ -154,44 +242,80 @@ docker compose logs -f bot
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BOT_TOKEN` | — | Токен от [@BotFather](https://t.me/BotFather) |
-| `ADMIN_IDS` | — | Telegram user IDs главных админов, CSV |
-| `GROUP_IDS` | — | Разрешённые чаты; пусто = только DM |
-| `BACKUP_CHAT_ID` | — | Приватный канал для auto-backups |
-| `REDIS_URL` | — | `redis://redis:6379/0`; пусто = MemoryStorage fallback |
-| `TIMEZONE` | `Asia/Tashkent` | Все cron и даты в UI |
-| `REPORT_HOUR` | `6` | Утренний отчёт |
-| `EVENING_REPORT_HOUR` | `20` | Вечернее summary |
-| `DEFAULT_ENTRY_FEE` | `20` | Глобальный entry fee, $ |
-| `DEFAULT_FREE_DAYS` | `30` | Глобальные free days |
-| `DEFAULT_STORAGE_RATE` | `20` | Ставка хранения, $ |
-| `DEFAULT_STORAGE_PERIOD_DAYS` | `30` | Период тарификации |
+| `BOT_TOKEN` | — | Token from [@BotFather](https://t.me/BotFather) |
+| `ADMIN_IDS` | — | Telegram user IDs of root admins, CSV |
+| `GROUP_IDS` | — | Allowed chats; empty = DM only |
+| `BACKUP_CHAT_ID` | — | Private channel for auto-backups |
+| `REDIS_URL` | — | `redis://redis:6379/0`; empty = MemoryStorage fallback |
+| `TIMEZONE` | `Asia/Tashkent` | All cron jobs and displayed timestamps |
+| `REPORT_HOUR` | `6` | Morning report |
+| `EVENING_REPORT_HOUR` | `20` | Evening summary |
+| `DEFAULT_ENTRY_FEE` | `20` | Global entry fee, $ |
+| `DEFAULT_FREE_DAYS` | `30` | Global free storage days |
+| `DEFAULT_STORAGE_RATE` | `20` | Global storage rate, $ |
+| `DEFAULT_STORAGE_PERIOD_DAYS` | `30` | Global storage period |
+
+---
+
+## Deploy
+
+Production runs on a single DigitalOcean droplet (Ubuntu 24.04). Update flow:
+
+```bash
+ssh deploy@<host>
+cd ~/container
+git pull --ff-only
+docker compose pull       # if image is registry-hosted
+docker compose up -d --build
+```
+
+`restart: always` on both services keeps the bot running across reboots and transient failures.
+Rollback is a `git checkout <previous-tag>` + `docker compose up -d --build`; state is
+preserved because the SQLite file and Redis AOF live on the host volume.
+
+Zero-downtime on a single VPS is intentionally out of scope — the "outage" of a `docker compose up`
+is a few seconds, polling reconnects automatically, and FSM state is persisted in Redis AOF.
+
+---
+
+## Development
+
+### Local run without Docker
+
+```bash
+python -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env          # set BOT_TOKEN and ADMIN_IDS at minimum
+python bot.py
+```
 
 ### Tests
 
 ```bash
-docker compose exec bot pytest -q
+pytest -q                     # all 60 tests
+pytest -q tests/test_debt.py  # single module
 ```
 
----
+### Operational notes
 
-## Operational notes
-
-- **Logs:** JSON-file driver Docker, ротация `10M × 3`.
-- **Non-root user** в контейнере (UID 1000), `chown` на `/app/data`.
-- **TZ-aware Dockerfile:** `ENV TZ=Asia/Tashkent` — иначе `datetime.now()` расходится с UI на 5 часов.
-- **Redis persistence:** `appendonly yes --appendfsync everysec` — тёплый перезапуск без потери FSM.
-- **SQLite WAL:** `PRAGMA journal_mode=WAL` выставляется при инициализации; concurrent readers + один writer.
+- **TZ-aware Dockerfile** — `ENV TZ=Asia/Tashkent`. Without this, `datetime.now()` inside the
+  container is UTC, and arrival dates drift 5 hours from what the user sees.
+- **SQLite WAL** — `PRAGMA journal_mode=WAL` is set on init. Concurrent readers, a single writer,
+  no `database is locked` during the xlsx export window.
+- **Redis persistence** — `appendonly yes --appendfsync everysec` in docker-compose. Bounded
+  data loss window on power failure: 1 second of FSM transitions.
+- **Log rotation** — json-file driver, `10M × 3`. No cron cleanup needed.
 
 ---
 
 ## Roadmap
 
-- PostgreSQL + `asyncpg` при 10+ concurrent операторов (сейчас максимум 3 на терминал)
-- Web-админка (React) поверх того же сервисного слоя
-- Выгрузка реестра в 1С (CSV с нужной схемой — есть отдельный open issue)
-- Multi-tenant: один instance — несколько терминалов (сейчас один-в-один)
+- **PostgreSQL + asyncpg** once a terminal has 10+ concurrent operators (current max: 3).
+- **Web admin panel** (React) on top of the same service layer, for managers who prefer a browser.
+- **1C export** — CSV with the accounting schema they use; existing open issue.
+- **Multi-tenant** — one bot instance serving multiple terminals (today it's one-to-one).
 
 ---
 
-Исходники опубликованы для портфолио. Коммерческое использование — по согласованию.
+Private project. Source published for portfolio use; commercial use subject to agreement.
