@@ -61,52 +61,69 @@ so the dispatcher can see activity without opening the app.
 
 ### Request flow
 
-```mermaid
-flowchart LR
-    User([Telegram user]) -->|update| Dispatcher
-    subgraph Process["Bot process (single container)"]
-        direction TB
-        Dispatcher[aiogram Dispatcher] --> ChatFilter
-        ChatFilter[ChatFilter<br/>DM + whitelisted groups] --> Role[RoleMiddleware<br/>resolves role from DB]
-        Role --> Routers[Routers<br/>containers · companies · reports<br/>users · tariffs · menu]
-        Routers --> Services[Services<br/>debt calc · xlsx · notifications]
-        Services --> DAL[aiosqlite DAL]
-    end
-    Services -.->|response| User
-    Services -.->|channel push| Channel([Ops channel])
-```
+Every update enters the same pipeline. `ChatFilter` drops updates from chats
+outside the allowlist, `RoleMiddleware` resolves the caller's role from the DB,
+and only then a router dispatches to a handler. Business logic lives in
+`services/` — handlers are ~10 lines each and delegate everything.
 
-Every update travels through the same two middlewares before it reaches a handler,
-so there is no way to call a service without a validated chat and a resolved role.
-Handlers are thin — all business logic lives in `services/`, which keeps them
-unit-testable with in-memory doubles.
+```
+                   ┌────────────────────────────────────────────────┐
+                   │  bot process · single container                │
+                   │                                                │
+  Telegram ──►──── │  aiogram Dispatcher                            │
+   update          │        │                                       │
+                   │        ▼                                       │
+                   │  ChatFilter         ── drops if chat ∉ allow   │
+                   │        │                                       │
+                   │        ▼                                       │
+                   │  RoleMiddleware     ── resolves role from DB   │
+                   │        │                                       │
+                   │        ▼                                       │
+                   │  Router             ── containers · companies  │
+                   │        │               reports · users · tariffs
+                   │        ▼                                       │
+                   │  Service layer      ── debt calc · xlsx        │
+                   │        │               notifications           │
+                   │        ▼                                       │
+                   │  aiosqlite DAL ──► SQLite (WAL)                │
+                   │                                                │
+                   └────────────────────────────────────────────────┘
+                            │                    │
+                            ▼                    ▼
+                       reply to user        ops channel push
+```
 
 ### Runtime topology
 
-```mermaid
-flowchart TB
-    subgraph Host["DigitalOcean droplet — Ubuntu 24.04"]
-        subgraph Bot["container-bot (non-root, UID 1000)"]
-            App[aiogram app]
-            Scheduler[APScheduler<br/>TZ Asia/Tashkent]
-        end
-        subgraph Redis["container-redis"]
-            R[(Redis 7<br/>AOF · everysec)]
-        end
-        Data[("./data<br/>bind-mounted<br/>SQLite + WAL")]
-    end
+Two containers, one bind-mount, one outbound dependency. The bot never binds
+a TCP port — Telegram long polling is the only ingress. Redis stays on the
+internal Compose network.
 
-    App <-->|FSM state| R
-    App -->|read / write| Data
-    Scheduler -->|VACUUM INTO<br/>every 6h| Data
-    Scheduler -->|send_document| Backups([Private backup channel])
-    Scheduler -->|06:00 / 20:00| Ops([Ops channel])
-    App <-->|long polling| TG([Telegram API])
 ```
-
-Only two containers, one bind-mount, one outbound dependency. Redis is not
-exposed outside the compose network; the bot never opens a listening port —
-Telegram is the only ingress.
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  DigitalOcean droplet · Ubuntu 24.04                             │
+  │                                                                  │
+  │  ┌────────────────────────┐      ┌──────────────────────────┐    │
+  │  │  container-bot         │      │  container-redis         │    │
+  │  │  (non-root, UID 1000)  │◄────►│  Redis 7                 │    │
+  │  │                        │ FSM  │  AOF · everysec          │    │
+  │  │  aiogram + APScheduler │      └──────────────────────────┘    │
+  │  │          │             │                                      │
+  │  │          ▼             │      ┌──────────────────────────┐    │
+  │  │  aiosqlite ◄───────────┼─────►│  ./data  (bind-mount)    │    │
+  │  │          │             │      │  SQLite + WAL            │    │
+  │  │          │             │      └──────────────────────────┘    │
+  │  └──────────┼─────────────┘                                      │
+  │             │                                                    │
+  └─────────────┼────────────────────────────────────────────────────┘
+                │
+   long polling │             cron 6h       cron 06:00 / 20:00
+                ▼                ▼                ▼
+         ┌─────────────┐   ┌──────────┐   ┌──────────────┐
+         │  Telegram   │   │  Backup  │   │  Ops channel │
+         │    API      │   │  channel │   │              │
+         └─────────────┘   └──────────┘   └──────────────┘
+```
 
 ### Stack choices and trade-offs
 
