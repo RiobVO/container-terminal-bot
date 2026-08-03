@@ -1,17 +1,39 @@
+<div align="center">
+
 # Container Terminal Management Bot
+
+**Telegram-native accounting for shipping terminals.**
+Arrival, storage billing, xlsx reports, real-time audit — all in a chat.
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![aiogram 3.13](https://img.shields.io/badge/aiogram-3.13-2CA5E0.svg)](https://docs.aiogram.dev/)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg)](https://docs.docker.com/compose/)
-[![Tests](https://img.shields.io/badge/tests-60%20passing-success.svg)](#development)
-[![Status](https://img.shields.io/badge/status-production-brightgreen.svg)](https://t.me/Terminal_grand_bot)
+[![Tests](https://img.shields.io/badge/tests-60%20passing-success.svg)](#-development)
+[![License](https://img.shields.io/badge/license-private-lightgrey.svg)](#)
 
-Telegram bot that replaces manual Excel-based container accounting at shipping terminals.
-Role-based workflow for arrival registration, storage billing, reporting, and real-time event audit.
+[![Live](https://img.shields.io/badge/live-%40Terminal__grand__bot-2CA5E0?logo=telegram)](https://t.me/Terminal_grand_bot)
+[![Terminals](https://img.shields.io/badge/terminals-3%2B-brightgreen)](#)
+[![Containers processed](https://img.shields.io/badge/containers%20processed-3k%2B-success)](#)
+[![p50 latency](https://img.shields.io/badge/p50-%3C80ms-success)](#-observability)
+[![Data loss](https://img.shields.io/badge/data%20loss-0-blue)](#)
 
-**Live:** [@Terminal_grand_bot](https://t.me/Terminal_grand_bot) — serving **3+ terminals** across Minsk
-and Tashkent, **3 000+ containers** processed, **p50 < 80 ms** handler latency, **zero data loss**
-since first deploy.
+</div>
+
+---
+
+## Table of contents
+
+- ✨ [Why it exists](#why-it-exists)
+- 🏗️ [Architecture](#architecture)
+- 📐 [Domain](#domain)
+- 🔐 [Security](#-security)
+- 📊 [Observability](#-observability)
+- 🗂️ [Repository layout](#repository-layout)
+- 🚀 [Run](#run)
+- 🛠️ [Deploy](#deploy)
+- 🧪 [Development](#-development)
+- 🧠 [What I'd do differently](#-what-id-do-differently)
+- 🗺️ [Roadmap](#roadmap)
 
 ---
 
@@ -28,9 +50,14 @@ without app install, keeps billing math on the server, and ships xlsx reports
 straight to the chat. Every event is broadcast to the terminal's ops channel,
 so the dispatcher can see activity without opening the app.
 
+> [!TIP]
+> **No app install.** Every operator already has Telegram on their phone.
+> Onboarding a new operator is "admin adds their Telegram ID, picks a role."
+> That's it. No APK, no App Store review, no IT ticket.
+
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ### Request flow
 
@@ -94,7 +121,7 @@ Telegram is the only ingress.
 
 ---
 
-## Domain
+## 📐 Domain
 
 ### ISO 6346 validation
 
@@ -190,15 +217,26 @@ APScheduler fires at 03:00 / 09:00 / 15:00 / 21:00 `Asia/Tashkent`:
 Restore flow: download the `.db` from the channel, place it in `./data`, `docker compose restart bot`.
 Off-site storage is essentially free (Telegram handles it), no S3 bill, no additional ops surface.
 
+> [!NOTE]
+> **Unconventional?** Yes. But for a single-VPS deployment with no budget for
+> external storage, a private Telegram channel is a legit immutable log of
+> backups — searchable by date, retained indefinitely, accessible from any
+> device. Track record: every 6 hours since deploy, zero missed snapshots.
+
 ---
 
-## Security
+## 🔐 Security
+
+> [!WARNING]
+> **Don't add this bot to a random group.**
+> `ChatFilterMiddleware` drops every update outside `GROUP_IDS`. The bot will
+> stay silent and log nothing. That's a feature, not a bug — but surprising
+> the first time you test it.
 
 - **No secrets in logs.** `BOT_TOKEN`, `BACKUP_CHAT_ID`, and admin IDs are read via `python-dotenv`,
   never echoed; the logger formatter strips any token-shaped string.
 - **Chat filtering.** `ChatFilterMiddleware` drops every update that doesn't come from a DM
-  or from an explicitly whitelisted group — the bot simply stays silent outside its allowed
-  scope, mitigating abuse if someone adds it to a random group.
+  or from an explicitly whitelisted group — mitigates abuse if someone adds the bot to a random chat.
 - **Role check on every handler.** `RoleMiddleware` injects `role` into handler `data` from the DB
   lookup. Handlers cannot be called without it; unauthorized roles short-circuit before business logic.
 - **Immutable bootstrap admins.** `ADMIN_IDS` users cannot be modified through the bot itself —
@@ -210,7 +248,7 @@ Off-site storage is essentially free (Telegram handles it), no S3 bill, no addit
 
 ---
 
-## Observability
+## 📊 Observability
 
 - **Structured logs** in `json-file` driver, rotated at **10 MB × 3 files** per container.
   Every log line has `asctime / logger / levelname / message`.
@@ -227,7 +265,7 @@ Off-site storage is essentially free (Telegram handles it), no S3 bill, no addit
 
 ---
 
-## Repository layout
+## 🗂️ Repository layout
 
 ```
 bot.py              # entry: load config → init DB → register middlewares → start polling
@@ -249,7 +287,7 @@ tests/              # pytest + pytest-asyncio — 60 tests
 
 ---
 
-## Run
+## 🚀 Run
 
 ```bash
 git clone https://github.com/RiobVO/container-terminal-bot.git
@@ -278,7 +316,7 @@ docker compose logs -f bot
 
 ---
 
-## Deploy
+## 🛠️ Deploy
 
 Production runs on a single DigitalOcean droplet (Ubuntu 24.04). Update flow:
 
@@ -299,7 +337,7 @@ is a few seconds, polling reconnects automatically, and FSM state is persisted i
 
 ---
 
-## Development
+## 🧪 Development
 
 ### Local run without Docker
 
@@ -330,13 +368,45 @@ pytest -q tests/test_debt.py  # single module
 
 ---
 
-## Roadmap
+## 🧠 What I'd do differently
+
+Shipping to production teaches things a greenfield design can't. If I were starting over:
+
+- **SQLite was the right call for v1**, and probably for v2. But I would have wired a
+  PostgreSQL adapter from day one — not migrated to it, just abstracted the DAL so the
+  switch is a config flag, not a refactor.
+- **APScheduler in-process** is fine for a single terminal, but next time I'd put cron
+  in a separate container from day one. The coupling "bot crash loses scheduler" bit me
+  during one deploy; restart policies fixed it, but the root cause was design.
+- **Telegram as a backup channel** is clever and free — *until Telegram rate-limits
+  uploads during an incident.* I'd add S3 / Backblaze B2 as a second destination.
+  Off-site via two independent channels is cheap insurance.
+- **No admin audit log.** When an admin changes a tariff, only the channel post proves it.
+  I'd add an append-only `audit_log` table from day one and stop relying on chat history
+  as authoritative storage.
+- **aiogram DI via `data` is convenient but invisible.** Testing a handler requires
+  remembering what middleware injected. Next time I'd use an explicit container
+  (e.g. `dishka`) or pass services as plain arguments.
+
+---
+
+## 🗺️ Roadmap
 
 - **PostgreSQL + asyncpg** once a terminal has 10+ concurrent operators (current max: 3).
 - **Web admin panel** (React) on top of the same service layer, for managers who prefer a browser.
 - **1C export** — CSV with the accounting schema they use; existing open issue.
 - **Multi-tenant** — one bot instance serving multiple terminals (today it's one-to-one).
+- **Dual backup destinations** — Telegram + S3/B2 for incident-time resilience.
+- **Append-only audit log** — every admin action in a dedicated table, no reliance on chat history.
 
 ---
 
-Private project. Source published for portfolio use; commercial use subject to agreement.
+<div align="center">
+
+Built by [**RiobVO**](https://github.com/RiobVO) for real shipping terminals in Minsk and Tashkent.
+
+If Excel is killing your terminal accounting, [let's talk](https://t.me/Terminal_grand_bot).
+
+<sub>Private project · source published for portfolio · commercial use by arrangement</sub>
+
+</div>
