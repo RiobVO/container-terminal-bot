@@ -7,6 +7,7 @@
 обслуживает все шесть комбинаций. Хэндлеры только собирают список
 контейнеров и параметры (group_field, имя файла, подпись) и вызывают его.
 """
+import asyncio
 import logging
 import tempfile
 from datetime import datetime
@@ -146,7 +147,11 @@ async def _generate_and_send(
     settings = await get_all_settings()
 
     filename = _build_filename(spec, company_name)
-    path = build_report(
+    # openpyxl синхронный и CPU-bound: на 150+ контейнерах генерация
+    # занимает 5–7 секунд. Без to_thread это блокирует event loop, и
+    # все клики всех юзеров висят, пока пишется файл.
+    path = await asyncio.to_thread(
+        build_report,
         list(containers),
         settings,
         _REPORT_DIR,
