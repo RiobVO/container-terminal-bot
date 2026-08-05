@@ -21,6 +21,7 @@ from aiogram.types import Message
 
 from db import companies as db_comp
 from db import containers as db_cont
+from services.normalizer import normalize_container_number
 from keyboards.containers import CONTAINER_TYPES
 from keyboards.main import main_menu
 from keyboards.register import (
@@ -95,9 +96,35 @@ async def company_cancel(
 async def process_company(
     message: Message, state: FSMContext, role: str
 ) -> None:
+    data = await state.get_data()
+    display = data.get("display_number")
+    if display is None:
+        # Сессия пережила деплой/сбой и потеряла данные — мягкий сброс.
+        logger.warning(
+            "Регистрация без display_number в FSM: user=%s, keys=%s",
+            message.from_user.id if message.from_user else "?",
+            sorted(data.keys()),
+        )
+        await state.clear()
+        await message.answer(
+            "⚠️ Сессия регистрации устарела. "
+            "Введите номер контейнера заново.",
+            reply_markup=main_menu(role),
+        )
+        return
+
     name = (message.text or "").strip()
     if not name:
         await message.answer("❌ Введите название компании.")
+        return
+
+    if normalize_container_number(name) is not None:
+        # Оператор вбил номер следующего контейнера, а не название
+        # компании — не плодим мусорные компании вида «CASS1234567».
+        await message.answer(
+            "❌ Это похоже на номер контейнера, а не название компании.\n"
+            "Выберите компанию из списка или нажмите «◀ Отмена»."
+        )
         return
 
     company = await db_comp.get_company_by_name_ci(name)
@@ -112,9 +139,6 @@ async def process_company(
         )
 
     await state.update_data(company_id=company_id, company_name=company_name)
-
-    data = await state.get_data()
-    display = data.get("display_number", "")
 
     await message.answer(
         f"📦 Контейнер <b>{display}</b>\n"
@@ -294,6 +318,31 @@ async def _finalize(
     container_type: str | None,
 ) -> None:
     data = await state.get_data()
+    required = (
+        "number",
+        "display_number",
+        "company_id",
+        "company_name",
+        "status",
+    )
+    missing = [key for key in required if data.get(key) is None]
+    if missing:
+        # Сессия со старым порядком шагов пережила деплой — части данных
+        # нет. Молча подставлять дефолты нельзя — мягкий сброс с логом.
+        logger.warning(
+            "Неполные данные регистрации: user=%s, missing=%s, keys=%s",
+            message.from_user.id if message.from_user else "?",
+            missing,
+            sorted(data.keys()),
+        )
+        await state.clear()
+        await message.answer(
+            "⚠️ Сессия регистрации устарела. "
+            "Введите номер контейнера заново.",
+            reply_markup=main_menu(role),
+        )
+        return
+
     number = data["number"]
     display = data["display_number"]
     company_id = data["company_id"]
