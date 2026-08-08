@@ -7,6 +7,7 @@
 обслуживает все шесть комбинаций. Хэндлеры только собирают список
 контейнеров и параметры (group_field, имя файла, подпись) и вызывают его.
 """
+import asyncio
 import logging
 import tempfile
 from datetime import datetime
@@ -71,7 +72,7 @@ _REPORT_SPECS: dict[str, dict[str, object]] = {
     _TYPE_MIXED: {
         "statuses": ("on_terminal", "departed"),
         "group_field": "arrival_date",
-        "summary_sheet": None,
+        "summary_sheet": "Все контейнеры",
         "file_prefix_all": "mixed_all",
         "file_prefix_company": "mixed",
         "caption_all": "✅ Отчёт по активным и вывезенным контейнерам готов!",
@@ -83,7 +84,7 @@ _REPORT_SPECS: dict[str, dict[str, object]] = {
     _TYPE_DEPARTED: {
         "statuses": ("departed",),
         "group_field": "departure_date",
-        "summary_sheet": None,
+        "summary_sheet": "Все вывезенные",
         "file_prefix_all": "departed_all",
         "file_prefix_company": "departed",
         "caption_all": "✅ Отчёт по вывезенным контейнерам готов!",
@@ -146,7 +147,11 @@ async def _generate_and_send(
     settings = await get_all_settings()
 
     filename = _build_filename(spec, company_name)
-    path = build_report(
+    # openpyxl синхронный и CPU-bound: на 150+ контейнерах генерация
+    # занимает 5–7 секунд. Без to_thread это блокирует event loop, и
+    # все клики всех юзеров висят, пока пишется файл.
+    path = await asyncio.to_thread(
+        build_report,
         list(containers),
         settings,
         _REPORT_DIR,
