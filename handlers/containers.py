@@ -19,9 +19,11 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
+from db import audit as db_audit
 from db import companies as db_comp
 from db import containers as db_cont
-from db.settings import get_all_settings
+from handlers._card import send_container_card
+from handlers.register import start_registration
 from keyboards.containers import (
     BTN_ADD_CONTAINER,
     BTN_ARRIVED,
@@ -37,12 +39,12 @@ from keyboards.containers import (
     BTN_DEPART_MANUAL,
     BTN_DEPART_TODAY,
     BTN_EDIT_DEPARTURE_DATE,
+    BTN_HISTORY,
     BTN_SEARCH_BY_TYPE,
     BTN_UNDEPART,
     CONTAINER_TYPES,
     RESERVED_BUTTON_TEXTS,
     company_select_reply_kb,
-    container_card_reply_kb,
     containers_menu_reply_kb,
     containers_type_select_reply_kb,
     delete_confirm_reply_kb,
@@ -52,6 +54,7 @@ from keyboards.containers import (
 )
 from keyboards.main import BTN_BACK, BTN_CONTAINERS, main_menu
 from services.calculator import calculate_container_cost
+from services.formatters import fmt_dt, fmt_short_date
 from services.normalizer import normalize_container_number
 from states import ContainerDepart, ContainerSection, EditContainerNumber
 
@@ -64,17 +67,6 @@ router = Router()
 # ---------------------------------------------------------------------------
 
 
-def _fmt_dt(val: str | None) -> str:
-    if not val:
-        return "—"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(val, fmt).strftime("%d.%m.%Y %H:%M")
-        except ValueError:
-            continue
-    return val
-
-
 def _parse_arrival(val: str | None) -> datetime | None:
     """Парсит arrival_date из строки БД в datetime (или None)."""
     if not val:
@@ -85,139 +77,6 @@ def _parse_arrival(val: str | None) -> datetime | None:
         except ValueError:
             continue
     return None
-
-
-def _period_label(period_days: int) -> str:
-    """Человеческое описание периода начисления."""
-    if period_days <= 1:
-        return "ежедневный тариф"
-    if period_days == 30:
-        return "ежемесячный тариф"
-    return f"каждые {period_days} дн."
-
-
-def _mark(is_custom: bool) -> str:
-    return "индивидуальный" if is_custom else "стандартный"
-
-
-def _card_text(container, cost: dict, show_tariff: bool = True) -> str:
-    """Формирует текст карточки контейнера.
-
-    show_tariff=False скрывает блок тарификации (для роли operator).
-    """
-    status = container["status"]
-    display = container["display_number"]
-    company_name = container["company_name"] or "—"
-    ctype = container["type"] or "не указан"
-
-    if status == "in_transit":
-        return (
-            f"🚚 <b>Контейнер {display}</b> (В пути)\n\n"
-            f"🏢 Компания: {company_name}\n"
-            f"📦 Тип: {ctype}\n"
-            f"⏳ Контейнер ещё не прибыл на терминал."
-        )
-
-    tariff_section = ""
-    if show_tariff:
-        entry_mark = _mark(cost["entry_is_custom"])
-        free_mark = _mark(cost["free_days_is_custom"])
-        rate_mark = _mark(cost["storage_rate_is_custom"])
-        period_mark = _mark(cost["storage_period_is_custom"])
-        period_label = _period_label(cost["period_days"])
-
-        tariff_block = (
-            f"💰 Стоимость входа: {cost['entry_fee']} $ ({entry_mark})\n"
-            f"🆓 Бесплатных дней: {cost['free_days']} ({free_mark})\n"
-            f"💵 Ставка хранения: {cost['storage_rate']} $ "
-            f"за {cost['period_days']} дн. ({rate_mark}, {period_label}, {period_mark})"
-        )
-
-        calc_block = (
-            f"📊 <b>Расчёт:</b>\n"
-            f"• Дней на терминале: {cost['days']}\n"
-            f"• Платных дней: {cost['billable_days']}\n"
-            f"• Периодов к оплате: {cost['periods']}\n"
-            f"• Вход: {cost['entry']} $\n"
-            f"• Хранение: {cost['storage']} $\n"
-            f"💰 К оплате: {cost['total']} $"
-        )
-        tariff_section = f"\n\n💳 <b>Тарификация</b>\n{tariff_block}\n\n{calc_block}"
-
-    if status == "departed":
-        dep_date = _fmt_dt(container["departure_date"])
-        arr_date = _fmt_dt(container["arrival_date"])
-        return (
-            f"🔴 <b>Контейнер {display}</b> (Вывезен)\n\n"
-            f"🏢 Компания: {company_name}\n"
-            f"📦 Тип: {ctype}\n"
-            f"📅 Дата прибытия: {arr_date}\n"
-            f"📅 Дата вывоза: {dep_date}"
-            f"{tariff_section}"
-        )
-
-    arr_date = _fmt_dt(container["arrival_date"])
-    return (
-        f"📦 <b>Контейнер {display}</b>\n\n"
-        f"🏢 Компания: {company_name}\n"
-        f"📦 Тип: {ctype}\n"
-        f"📅 Дата прибытия: {arr_date}"
-        f"{tariff_section}"
-    )
-
-
-async def _send_container_card(
-    message: Message,
-    container,
-    state: FSMContext | None = None,
-    source: str | None = None,
-    role: str = "full",
-) -> None:
-    """Отправляет карточку контейнера.
-
-    Если передан `state` — переводит FSM в `ContainerSection.card` и пишет
-    `container_id` / `card_source`. Если `state=None` (например, при вызове
-    из FSM регистрации, где состояние уже сброшено), карточка просто
-    отправляется без изменения FSM.
-
-    `source` — откуда открыта карточка: "active" или "departed". Если None
-    и state задан, значение берётся из текущих данных FSM (по умолчанию
-    "active").
-
-    `role` — роль пользователя. operator не видит блок тарификации.
-    """
-    settings = await get_all_settings()
-    cost = calculate_container_cost(
-        container,
-        settings,
-        comp_entry_fee=container["comp_entry_fee"],
-        comp_free_days=container["comp_free_days"],
-        comp_storage_rate=container["comp_storage_rate"],
-        comp_storage_period_days=container["comp_storage_period_days"],
-    )
-
-    if state is not None:
-        if source is None:
-            data = await state.get_data()
-            source = data.get("card_source", "active")
-        await state.set_state(ContainerSection.card)
-        await state.update_data(
-            container_id=container["id"], card_source=source
-        )
-
-    # Определяем роль: если не передана явно — берём из БД
-    actual_role = role
-    if actual_role == "full" and message.from_user:
-        from db.users import get_role
-        db_role = await get_role(message.from_user.id)
-        if db_role:
-            actual_role = db_role
-
-    show_tariff = actual_role != "operator"
-    await message.answer(
-        _card_text(container, cost, show_tariff=show_tariff),
-        reply_markup=container_card_reply_kb(container["status"]),
-    )
 
 
 async def _show_menu(message: Message, state: FSMContext) -> None:
@@ -341,12 +200,11 @@ async def _process_number_text(
 
     if existing:
         source = "departed" if existing["status"] == "departed" else "active"
-        await _send_container_card(
+        await send_container_card(
             message, existing, state, source=source, role=role
         )
         return
 
-    from handlers.register import start_registration
     await start_registration(message, state, normalized, display)
 
 
@@ -437,7 +295,7 @@ async def _reload_and_send_card(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ Контейнер не найден.")
         await _show_menu(message, state)
         return
-    await _send_container_card(message, container, state)
+    await send_container_card(message, container, state)
 
 
 @router.message(ContainerSection.card, F.text == BTN_CARD_BACK_ACTIVE)
@@ -452,6 +310,13 @@ async def card_arrived(message: Message, state: FSMContext) -> None:
     if container_id is None:
         return
     await db_cont.set_arrived(container_id)
+    fresh = await db_cont.get_container(container_id)
+    if fresh:
+        await db_audit.add_entry(
+            message.from_user, "прибыл на терминал", "container",
+            container_id, fresh["display_number"],
+            f"дата прибытия: {fmt_short_date(fresh['arrival_date'])}",
+        )
     await message.answer("✅ Контейнер прибыл на терминал")
     await _reload_and_send_card(message, state)
 
@@ -516,7 +381,15 @@ async def card_undepart(message: Message, state: FSMContext) -> None:
     container_id = data.get("container_id")
     if container_id is None:
         return
+    # Контейнер читается ДО отмены — в аудит уходит снятая дата вывоза.
+    container = await db_cont.get_container(container_id)
     await db_cont.undo_departure(container_id)
+    if container:
+        await db_audit.add_entry(
+            message.from_user, "отменён вывоз", "container",
+            container_id, container["display_number"],
+            f"снята дата вывоза: {fmt_short_date(container['departure_date'])}",
+        )
     await state.update_data(card_source="active")
     await message.answer("✅ Вывоз отменён")
     await _reload_and_send_card(message, state)
@@ -584,6 +457,49 @@ async def card_delete_ask(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.message(ContainerSection.card, F.text == BTN_HISTORY)
+async def card_history(
+    message: Message, state: FSMContext, role: str
+) -> None:
+    """История операций по контейнеру из аудит-лога — только роль full.
+
+    Для operator/reports_only кнопка не показывается, а прямой ввод
+    текста молча игнорируется (как остальные guard'ы карточки).
+    """
+    if role != "full":
+        return
+    data = await state.get_data()
+    container_id = data.get("container_id")
+    if container_id is None:
+        return
+    container = await db_cont.get_container(container_id)
+    if not container:
+        return
+
+    entries = await db_audit.list_for_container(container["number"])
+    if not entries:
+        await message.answer(
+            f"📜 История по контейнеру "
+            f"<b>{container['display_number']}</b> пуста."
+        )
+        return
+
+    lines: list[str] = []
+    for e in entries:
+        line = (
+            f"🕓 {fmt_dt(e['created_at'])} — "
+            f"{e['actor_name'] or '?'}: {e['action']}"
+        )
+        if e["details"]:
+            line += f"\n   {e['details']}"
+        lines.append(line)
+
+    await message.answer(
+        f"📜 <b>История контейнера {container['display_number']}</b>\n\n"
+        + "\n".join(lines)
+    )
+
+
 @router.message(ContainerSection.card)
 async def card_fallback(
     message: Message, state: FSMContext, role: str
@@ -641,7 +557,7 @@ async def _restore_card_after_cancel(
     if container is None:
         await _show_menu(message, state)
         return
-    await _send_container_card(message, container, state)
+    await send_container_card(message, container, state)
 
 
 async def _finalize_departure(
@@ -674,14 +590,24 @@ async def _finalize_departure(
     pretty = departure.strftime("%d.%m.%Y")
 
     if mode == "edit":
+        old_pretty = fmt_short_date(container["departure_date"])
         await db_cont.update_departure_date(container_id, dt_str)
         confirmation = f"✅ Дата вывоза изменена на {pretty}."
+        await db_audit.add_entry(
+            message.from_user, "изменена дата вывоза", "container",
+            container_id, display,
+            f"дата вывоза: {old_pretty} → {pretty}",
+        )
     else:
         await db_cont.set_departed(container_id, dt_str)
         confirmation = (
             f"✅ Контейнер {display} вывезен."
             if used_today_button
             else f"✅ Контейнер {display} вывезен {pretty}."
+        )
+        await db_audit.add_entry(
+            message.from_user, "вывезен", "container",
+            container_id, display, f"дата вывоза: {pretty}",
         )
 
     await message.answer(confirmation)
@@ -712,7 +638,7 @@ async def _finalize_departure(
 
     fresh = await db_cont.get_container(container_id)
     if fresh is not None:
-        await _send_container_card(message, fresh, state)
+        await send_container_card(message, fresh, state)
 
 
 @router.message(
@@ -824,7 +750,15 @@ async def type_selected(message: Message, state: FSMContext) -> None:
     container_id = data.get("container_id")
     if container_id is None:
         return
+    # Старый тип читается до обновления — для пары «старое → новое».
+    container = await db_cont.get_container(container_id)
     await db_cont.update_type(container_id, message.text)
+    if container:
+        await db_audit.add_entry(
+            message.from_user, "изменён тип", "container",
+            container_id, container["display_number"],
+            f"тип: {container['type'] or '—'} → {message.text}",
+        )
     await _reload_and_send_card(message, state)
 
 
@@ -860,7 +794,15 @@ async def company_selected(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ Компания не найдена, выберите из списка.")
         return
 
+    # Старая компания читается до обновления — для пары «старое → новое».
+    container = await db_cont.get_container(container_id)
     await db_cont.update_company(container_id, company["id"])
+    if container:
+        await db_audit.add_entry(
+            message.from_user, "сменена компания", "container",
+            container_id, container["display_number"],
+            f"компания: {container['company_name'] or '—'} → {company['name']}",
+        )
     await _reload_and_send_card(message, state)
 
 
@@ -887,6 +829,10 @@ async def delete_confirm(message: Message, state: FSMContext) -> None:
     company = (container["company_name"] or "—") if container else "—"
 
     await db_cont.delete_container(container_id)
+    await db_audit.add_entry(
+        message.from_user, "удалён", "container",
+        container_id, display, f"компания: {company}",
+    )
     await message.answer("✅ Удалено")
 
     # Live-лента: уведомление в группы
@@ -936,11 +882,19 @@ async def edit_number_process(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     container_id = data["container_id"]
 
+    # Старый номер читается до обновления — для пары «старое → новое».
+    old = await db_cont.get_container(container_id)
     ok = await db_cont.update_number(container_id, normalized, display)
     if not ok:
         await message.answer("❌ Контейнер с таким номером уже существует.")
         return
+    if old:
+        await db_audit.add_entry(
+            message.from_user, "изменён номер", "container",
+            container_id, display,
+            f"номер: {old['display_number']} → {display}",
+        )
 
     container = await db_cont.get_container(container_id)
     if container:
-        await _send_container_card(message, container, state)
+        await send_container_card(message, container, state)
