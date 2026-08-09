@@ -8,6 +8,7 @@ from aiogram import Bot
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from services.daily_report import build_morning_report, build_evening_report
 from services.group_notify import notify_groups
@@ -80,7 +81,11 @@ async def _send_morning_report(bot: Bot, group_ids: frozenset[int]) -> None:
                 try:
                     await bot.unpin_chat_message(chat_id=gid, message_id=prev_msg_id)
                 except Exception:
-                    pass
+                    # Закреп могли снять руками — отправке не мешает, но фиксируем
+                    logger.exception(
+                        "Утренний отчёт: не удалось снять закреп %s в группе %s",
+                        prev_msg_id, gid,
+                    )
 
             first_msg = await bot.send_message(
                 chat_id=gid, text=parts[0], parse_mode="HTML", reply_markup=kb,
@@ -90,8 +95,9 @@ async def _send_morning_report(bot: Bot, group_ids: frozenset[int]) -> None:
                 try:
                     await bot.send_message(chat_id=gid, text=extra, parse_mode="HTML")
                 except Exception:
-                    logger.warning(
-                        "Не удалось отправить продолжение отчёта в %s", gid, exc_info=True,
+                    logger.exception(
+                        "Утренний отчёт: не удалось отправить продолжение в группу %s",
+                        gid,
                     )
 
             try:
@@ -100,10 +106,14 @@ async def _send_morning_report(bot: Bot, group_ids: frozenset[int]) -> None:
                 )
                 _pinned_messages[gid] = first_msg.message_id
             except Exception:
-                logger.warning("Не удалось закрепить отчёт в группе %s", gid)
+                logger.exception(
+                    "Утренний отчёт: не удалось закрепить сообщение в группе %s", gid,
+                )
 
         except Exception:
-            logger.warning("Не удалось отправить утренний отчёт в %s", gid, exc_info=True)
+            logger.exception(
+                "Утренний отчёт: не удалось отправить в группу %s", gid,
+            )
 
 
 async def _send_evening_report(bot: Bot, group_ids: frozenset[int]) -> None:
@@ -153,6 +163,15 @@ async def _backup_db(bot: Bot, backup_chat_id: int, db_path: str) -> None:
         logger.warning("Не удалось отправить бэкап в канал %s", backup_chat_id, exc_info=True)
 
 
+def _touch_heartbeat(db_path: str) -> None:
+    """Обновляет mtime heartbeat-файла рядом с БД — сигнал живости для Docker healthcheck."""
+    heartbeat_path = Path(db_path).parent / "heartbeat"
+    try:
+        heartbeat_path.touch()
+    except OSError:
+        logger.warning("Не удалось обновить heartbeat: %s", heartbeat_path, exc_info=True)
+
+
 def init_scheduler(
     bot: Bot,
     group_ids: frozenset[int],
@@ -189,6 +208,16 @@ def init_scheduler(
             args=[bot, backup_chat_id, db_path],
             id="db_backup",
             name="Бэкап БД",
+        )
+
+    # Heartbeat для Docker healthcheck: файл `heartbeat` в каталоге данных
+    if db_path:
+        scheduler.add_job(
+            _touch_heartbeat,
+            IntervalTrigger(seconds=60),
+            args=[db_path],
+            id="heartbeat",
+            name="Heartbeat",
         )
 
     return scheduler

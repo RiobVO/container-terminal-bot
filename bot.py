@@ -11,6 +11,7 @@ from aiogram.types import BotCommand
 from config import load_config
 from db import init_db
 from handlers import setup_routers
+from services.log_masking import TokenMaskingFilter
 from services.scheduler import init_scheduler
 from middlewares.chat_filter import ChatFilterMiddleware
 from middlewares.role import RoleMiddleware
@@ -24,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     cfg = load_config()
+
+    # Маскировка токена: фильтр вешается на хендлеры root-логгера,
+    # чтобы накрыть записи всех дочерних логгеров
+    token_filter = TokenMaskingFilter(cfg.bot_token)
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(token_filter)
 
     await init_db(
         path=cfg.db_path,
