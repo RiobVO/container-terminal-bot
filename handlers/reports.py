@@ -27,11 +27,14 @@ from keyboards.reports import (
     BTN_REP_DEPARTED,
     BTN_REP_MIXED,
     BTN_SCOPE_ALL,
+    BTN_SCOPE_ALL_CSV,
     BTN_SCOPE_COMPANY,
+    BTN_SCOPE_COMPANY_CSV,
     report_company_select_reply_kb,
     reports_scope_reply_kb,
     reports_type_reply_kb,
 )
+from services.csv_export import build_csv_report
 from services.report_generator import build_report
 from states import ReportsMenu
 
@@ -44,6 +47,10 @@ _REPORT_DIR = Path(tempfile.gettempdir()) / "container_reports"
 _TYPE_ACTIVE = "active"
 _TYPE_MIXED = "mixed"
 _TYPE_DEPARTED = "departed"
+
+# Форматы файла. Код формата совпадает с расширением файла.
+_FMT_XLSX = "xlsx"
+_FMT_CSV = "csv"
 
 # Карта BTN → код типа. Двусторонняя навигация: текст кнопки ↔ код.
 _BTN_TO_TYPE: dict[str, str] = {
@@ -104,13 +111,13 @@ def _slugify(name: str) -> str:
 
 
 def _build_filename(
-    spec: dict[str, object], company_name: str | None
+    spec: dict[str, object], company_name: str | None, ext: str = _FMT_XLSX
 ) -> str:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if company_name is None:
-        return f"{spec['file_prefix_all']}_{ts}.xlsx"
+        return f"{spec['file_prefix_all']}_{ts}.{ext}"
     safe = _slugify(company_name)
-    return f"{spec['file_prefix_company']}_{safe}_{ts}.xlsx"
+    return f"{spec['file_prefix_company']}_{safe}_{ts}.{ext}"
 
 
 async def _reset_to_menu(message: Message, state: FSMContext) -> None:
@@ -128,6 +135,7 @@ async def _generate_and_send(
     state: FSMContext,
     report_type: str,
     company: dict | None,
+    fmt: str = _FMT_XLSX,
 ) -> None:
     """Собирает данные, вызывает генератор, отправляет файл, чистит FSM."""
     spec = _REPORT_SPECS[report_type]
@@ -146,19 +154,28 @@ async def _generate_and_send(
     )
     settings = await get_all_settings()
 
-    filename = _build_filename(spec, company_name)
-    # openpyxl синхронный и CPU-bound: на 150+ контейнерах генерация
-    # занимает 5–7 секунд. Без to_thread это блокирует event loop, и
-    # все клики всех юзеров висят, пока пишется файл.
-    path = await asyncio.to_thread(
-        build_report,
-        list(containers),
-        settings,
-        _REPORT_DIR,
-        filename,
-        group_field=spec["group_field"],  # type: ignore[arg-type]
-        summary_sheet_name=spec["summary_sheet"],  # type: ignore[arg-type]
-    )
+    filename = _build_filename(spec, company_name, ext=fmt)
+    # Генераторы синхронные: openpyxl CPU-bound (5–7 секунд на 150+
+    # контейнерах), CSV дешевле, но тоже файловый I/O. Без to_thread это
+    # блокирует event loop, и все клики всех юзеров висят, пока пишется файл.
+    if fmt == _FMT_CSV:
+        path = await asyncio.to_thread(
+            build_csv_report,
+            list(containers),
+            settings,
+            _REPORT_DIR,
+            filename,
+        )
+    else:
+        path = await asyncio.to_thread(
+            build_report,
+            list(containers),
+            settings,
+            _REPORT_DIR,
+            filename,
+            group_field=spec["group_field"],  # type: ignore[arg-type]
+            summary_sheet_name=spec["summary_sheet"],  # type: ignore[arg-type]
+        )
 
     caption = (
         spec["caption_one"].format(name=company_name)  # type: ignore[union-attr]
@@ -175,8 +192,8 @@ async def _generate_and_send(
         path.unlink(missing_ok=True)
 
     logger.info(
-        "Отчёт отправлен: type=%s company_id=%s user=%s",
-        report_type, company_id, message.from_user.id,
+        "Отчёт отправлен: type=%s fmt=%s company_id=%s user=%s",
+        report_type, fmt, company_id, message.from_user.id,
     )
 
     await _reset_to_menu(message, state)
@@ -229,22 +246,34 @@ async def scope_back_to_type(message: Message, state: FSMContext) -> None:
     await _reset_to_menu(message, state)
 
 
-@router.message(ReportsMenu.choosing_scope, F.text == BTN_SCOPE_ALL)
+@router.message(
+    ReportsMenu.choosing_scope, F.text.in_((BTN_SCOPE_ALL, BTN_SCOPE_ALL_CSV))
+)
 async def scope_all(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     report_type = data.get("report_type")
     if report_type not in _REPORT_SPECS:
         await _reset_to_menu(message, state)
         return
-    await _generate_and_send(message, state, report_type, company=None)
+    fmt = _FMT_CSV if message.text == BTN_SCOPE_ALL_CSV else _FMT_XLSX
+    await _generate_and_send(
+        message, state, report_type, company=None, fmt=fmt
+    )
 
 
-@router.message(ReportsMenu.choosing_scope, F.text == BTN_SCOPE_COMPANY)
+@router.message(
+    ReportsMenu.choosing_scope,
+    F.text.in_((BTN_SCOPE_COMPANY, BTN_SCOPE_COMPANY_CSV)),
+)
 async def scope_company(message: Message, state: FSMContext) -> None:
     companies = await db_comp.list_companies()
     if not companies:
         await message.answer("⚠️ Нет компаний.")
         return
+    # Формат фиксируем до выбора компании: company_selected прочитает его
+    # из FSM. Новое состояние не нужно — формат уже выбран кнопкой режима.
+    fmt = _FMT_CSV if message.text == BTN_SCOPE_COMPANY_CSV else _FMT_XLSX
+    await state.update_data(export_format=fmt)
     await state.set_state(ReportsMenu.choosing_company)
     await message.answer(
         "🏢 Выберите компанию для отчёта:",
@@ -284,6 +313,7 @@ async def company_selected(message: Message, state: FSMContext) -> None:
         await _reset_to_menu(message, state)
         return
 
+    fmt = data.get("export_format") or _FMT_XLSX
     await _generate_and_send(
-        message, state, report_type, company=dict(company)
+        message, state, report_type, company=dict(company), fmt=fmt
     )

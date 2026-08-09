@@ -11,6 +11,9 @@ BTN_REP_DEPARTED = "🔴 Только вывезенные"
 # Режим генерации
 BTN_SCOPE_ALL = "🌐 По всем компаниям"
 BTN_SCOPE_COMPANY = "🏢 По одной компании"
+# Те же режимы, но файл — CSV для импорта в 1С (вместо xlsx)
+BTN_SCOPE_ALL_CSV = "📑 CSV для 1С — по всем"
+BTN_SCOPE_COMPANY_CSV = "📑 CSV для 1С — по компании"
 
 
 def reports_type_reply_kb() -> ReplyKeyboardMarkup:
@@ -33,6 +36,8 @@ def reports_scope_reply_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_SCOPE_ALL)],
             [KeyboardButton(text=BTN_SCOPE_COMPANY)],
+            [KeyboardButton(text=BTN_SCOPE_ALL_CSV)],
+            [KeyboardButton(text=BTN_SCOPE_COMPANY_CSV)],
             [KeyboardButton(text=BTN_BACK)],
         ],
         resize_keyboard=True,
