@@ -18,10 +18,10 @@ python bot.py
 python -m tests.test_calculator   # свой раннер, не pytest
 ```
 
-### Прод (DigitalOcean, 188.166.127.192)
+### Прод (DigitalOcean, 165.22.194.128)
 
 ```bash
-ssh deploy@188.166.127.192
+ssh deploy@165.22.194.128
 cd ~/container
 git pull
 docker compose up -d --build
@@ -94,7 +94,7 @@ ISO 6346: 4 буквы + 7 цифр. Нормализация в `services/norma
 
 ## Прод-инфраструктура
 
-- **Сервер**: DigitalOcean droplet 1GB/25GB, Ubuntu 24.04, `188.166.127.192`, юзер `deploy`
+- **Сервер**: DigitalOcean droplet 1GB/25GB, Ubuntu 24.04, `165.22.194.128`, юзер `deploy`
 - **Репо**: https://github.com/RiobVO/container-terminal-bot
 - **Путь на сервере**: `~/container/`
 - **Docker Compose**: два контейнера — `container-bot` и `container-redis`
@@ -107,7 +107,7 @@ ISO 6346: 4 буквы + 7 цифр. Нормализация в `services/norma
 
 ```bash
 # Локально: остановить бота (Ctrl+C), убедиться что нет container.db-wal/shm
-scp container.db deploy@188.166.127.192:~/container/data/container.db
+scp container.db deploy@165.22.194.128:~/container/data/container.db
 # На сервере:
 sudo chown 1000:1000 ~/container/data/container.db
 docker compose restart bot
