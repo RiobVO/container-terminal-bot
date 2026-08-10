@@ -49,11 +49,13 @@ docker compose down            # стоп всё (данные целы в data/
 
 ### БД (`db/`)
 
-Актуальный пакет: `schema.py` (DDL v2), `migrations.py` (v0→v1→v2→operator role), `users.py`, `companies.py`, `containers.py`, `settings.py`. Подключение через `db.get_db()`.
+Актуальный пакет: `schema.py` (DDL), `migrations.py` (v0→v1→v2→operator role→audit_log), `users.py`, `companies.py`, `containers.py`, `settings.py`, `audit.py`. Подключение через `db.get_db()`.
 
 Легаси `db.py` в корне не используется — **не трогать, все изменения в `db/`**.
 
-Схема v2 — 4 таблицы: `global_settings` (key/value), `companies` (4 параметра тарифа, каждый NULL = стандарт), `containers` (status: in_transit / on_terminal / departed), `users` (роли: full / operator / reports_only / none).
+Актуальная схема — 5 таблиц: `global_settings` (key/value), `companies` (4 параметра тарифа, каждый NULL = стандарт), `containers` (status: in_transit / on_terminal / departed), `users` (роли: full / operator / reports_only / none), `audit_log` (append-only).
+
+Аудит-лог: запись через `db/audit.py:add_entry()` — хуки во всех мутирующих операциях (регистрация, статусы, правки, удаления, тарифы, роли). Сбой записи логируется, но не роняет бизнес-операцию. Просмотр — кнопка «📜 История» в карточке контейнера (только роль `full`, последние 15 записей).
 
 Миграции запускаются автоматически из `init_db`, делают бэкап `.backup_YYYYMMDD_HHMMSS` рядом с БД **до** изменений. Идемпотентны — проверяют фактическое состояние схемы.
 
@@ -77,9 +79,14 @@ ISO 6346: 4 буквы + 7 цифр. Нормализация в `services/norma
 ### Отчёты
 
 - `services/report_generator.py` — актуальный генератор xlsx, разбивка по листам-месяцам, use `services/calculator.py`
+- `services/csv_export.py` — плоский CSV для 1С (`;`-разделитель, utf-8-sig, даты ДД.ММ.ГГГГ, десятичная запятая), кнопки «📑 CSV для 1С — по всем / по компании» в разделе отчётов
 - `services/daily_report.py` — текстовые утренний (06:00, с предупреждениями о приближении тарификации и пином сообщения) и вечерний (20:00, итоги дня с diff от утра) отчёты
-- `services/scheduler.py` — APScheduler: утро, вечер, бэкап БД каждые 6ч (03/09/15/21:00 по TIMEZONE)
+- `services/scheduler.py` — APScheduler: утро, вечер, бэкап БД каждые 6ч (03/09/15/21:00 по TIMEZONE), heartbeat `data/heartbeat` каждые 60с (его mtime читает healthcheck в docker-compose)
 - `reports.py` в корне — legacy, **не трогать**
+
+### Общие модули
+
+`services/formatters.py` — общие форматтеры/парсеры (вынесены из хэндлеров), `services/log_masking.py` — `logging.Filter`, маскирует токен бота в логах, `handlers/_card.py` — карточка контейнера, разрывает цикл импортов register↔containers.
 
 ### Автобэкапы БД
 
@@ -135,4 +142,4 @@ docker compose restart bot
 
 - SQLite без WAL mode — ок при одном процессе и ~10 юзеров, не менять без нужды
 - `_cfg = load_config()` на import-time в `handlers/start.py` и `handlers/settings.py` — работает в докере (env vars от compose), может сломать тесты без `.env`
-- `message.bot._group_ids` — приватный атрибут, монкей-патч в `bot.py:41`. Работает, при обновлении aiogram может потребовать правки.
+- `message.bot._group_ids` — приватный атрибут, монкей-патч в `bot.py:41`. Проверено на aiogram 3.28.2 — атрибут ставится, работает; при следующих обновлениях aiogram перепроверять.
