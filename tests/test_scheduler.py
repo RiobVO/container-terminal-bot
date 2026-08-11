@@ -353,3 +353,20 @@ def test_init_scheduler_heartbeat_interval():
     )
     job = scheduler.get_job("heartbeat")
     assert job.trigger.interval.total_seconds() == 60
+
+
+def test_init_scheduler_backup_daily():
+    """Бэкап БД идёт раз в сутки в 03:00."""
+    scheduler = init_scheduler(
+        bot=_make_bot(),
+        group_ids=GROUPS,
+        report_hour=6,
+        evening_hour=20,
+        timezone="Asia/Tashkent",
+        backup_chat_id=-1009,
+        db_path="data/container.db",
+    )
+    job = scheduler.get_job("db_backup")
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["hour"] == "3"
+    assert fields["minute"] == "0"

@@ -200,11 +200,11 @@ def init_scheduler(
         name="Вечерний итог дня",
     )
 
-    # Бэкап БД каждые 6 часов (03:00, 09:00, 15:00, 21:00)
+    # Бэкап БД раз в сутки в 03:00 — ночью, когда операций нет
     if backup_chat_id and db_path:
         scheduler.add_job(
             _backup_db,
-            CronTrigger(hour="3,9,15,21", minute=0),
+            CronTrigger(hour=3, minute=0),
             args=[bot, backup_chat_id, db_path],
             id="db_backup",
             name="Бэкап БД",
