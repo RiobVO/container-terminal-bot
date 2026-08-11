@@ -119,7 +119,7 @@ internal Compose network.
   │             │                                                    │
   └─────────────┼────────────────────────────────────────────────────┘
                 │
-   long polling │             cron 6h       cron 06:00 / 20:00
+   long polling │           cron 03:00      cron 06:00 / 20:00
                 ▼                ▼                ▼
          ┌─────────────┐   ┌──────────┐   ┌──────────────┐
          │  Telegram   │   │  Backup  │   │  Ops channel │
@@ -255,7 +255,7 @@ decimal comma. Two scopes: all containers or a single company.
 
 ### Backups
 
-APScheduler fires at 03:00 / 09:00 / 15:00 / 21:00 `Asia/Tashkent`:
+APScheduler fires daily at 03:00 `Asia/Tashkent`:
 1. `VACUUM INTO /tmp/snapshot_<ts>.db` — atomic snapshot, no lock on the live DB.
 2. `bot.send_document` uploads the `.db` file to `BACKUP_CHAT_ID` (private channel).
 3. Local temp file is removed.
@@ -267,7 +267,7 @@ Off-site storage is essentially free (Telegram handles it), no S3 bill, no addit
 > **Unconventional?** Yes. But for a single-VPS deployment with no budget for
 > external storage, a private Telegram channel is a legit immutable log of
 > backups — searchable by date, retained indefinitely, accessible from any
-> device. Track record: every 6 hours since deploy, zero missed snapshots.
+> device. Track record: daily since deploy, zero missed snapshots.
 
 ---
 
@@ -302,7 +302,7 @@ Off-site storage is essentially free (Telegram handles it), no S3 bill, no addit
   the scheduler cron configuration, and the resolved timezone. First `docker logs` after
   a restart tells you immediately if Redis was unreachable or TZ didn't parse.
 - **Cron health.** APScheduler logs each fired job; missing entries in the log = cron didn't run.
-- **Backup heartbeat.** The private backup channel *is* the health signal: if a 6-hour window
+- **Backup heartbeat.** The private backup channel *is* the health signal: if a 24-hour window
   passes without a new `.db` file, something is broken. No external Prometheus needed for a
   single-VPS deployment.
 - **p50 < 80 ms** measured on Aiogram's built-in middleware that wraps every update.

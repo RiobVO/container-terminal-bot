@@ -81,7 +81,7 @@ ISO 6346: 4 буквы + 7 цифр. Нормализация в `services/norma
 - `services/report_generator.py` — актуальный генератор xlsx, разбивка по листам-месяцам, use `services/calculator.py`
 - `services/csv_export.py` — плоский CSV для 1С (`;`-разделитель, utf-8-sig, даты ДД.ММ.ГГГГ, десятичная запятая), кнопки «📑 CSV для 1С — по всем / по компании» в разделе отчётов
 - `services/daily_report.py` — текстовые утренний (06:00, с предупреждениями о приближении тарификации и пином сообщения) и вечерний (20:00, итоги дня с diff от утра) отчёты
-- `services/scheduler.py` — APScheduler: утро, вечер, бэкап БД каждые 6ч (03/09/15/21:00 по TIMEZONE), heartbeat `data/heartbeat` каждые 60с (его mtime читает healthcheck в docker-compose)
+- `services/scheduler.py` — APScheduler: утро, вечер, бэкап БД раз в сутки (03:00 по TIMEZONE), heartbeat `data/heartbeat` каждые 60с (его mtime читает healthcheck в docker-compose)
 - `reports.py` в корне — legacy, **не трогать**
 
 ### Общие модули

@@ -85,7 +85,7 @@ async def main() -> None:
         scheduler.start()
         logger.info(
             "Планировщик запущен: утренний=%02d:00, вечерний=%02d:00, "
-            "бэкап=каждые 6ч, tz=%s",
+            "бэкап=03:00, tz=%s",
             cfg.report_hour, cfg.evening_report_hour, cfg.timezone,
         )
     except Exception:
